@@ -417,4 +417,42 @@ def register_blueprint_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
     
+    @mcp.tool()
+    def get_blueprint_info(
+        ctx: Context,
+        blueprint_path: str
+    ) -> Dict[str, Any]:
+        """
+        Get detailed information about a Blueprint asset, including components, variables, and event graph nodes.
+
+        Args:
+            blueprint_path: Asset path of the Blueprint (e.g., "/Game/Blueprints/MyBlueprint" or just "MyBlueprint")
+
+        Returns:
+            Blueprint info as JSON: name, parent class, components, variables, event graphs with nodes and connections
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_blueprint_info", {
+                "blueprint_path": blueprint_path
+            })
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"Get blueprint info response received for: {blueprint_path}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error getting blueprint info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Blueprint tools registered successfully") 

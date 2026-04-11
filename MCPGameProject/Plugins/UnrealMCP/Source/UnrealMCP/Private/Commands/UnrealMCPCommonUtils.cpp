@@ -157,6 +157,28 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintN
     return LoadObject<UBlueprint>(nullptr, *AssetPath);
 }
 
+UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByPath(const FString& BlueprintPath)
+{
+    // If path starts with /Game/, treat as full asset path
+    if (BlueprintPath.StartsWith(TEXT("/Game/")) || BlueprintPath.StartsWith(TEXT("/Engine/")))
+    {
+        // Try loading with the path as-is first
+        UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+        if (Blueprint)
+        {
+            return Blueprint;
+        }
+
+        // Try appending the asset name (e.g., /Game/Foo/Bar -> /Game/Foo/Bar.Bar)
+        FString AssetName = FPaths::GetBaseFilename(BlueprintPath);
+        FString FullPath = BlueprintPath + TEXT(".") + AssetName;
+        return LoadObject<UBlueprint>(nullptr, *FullPath);
+    }
+
+    // Otherwise fall back to the default /Game/Blueprints/ lookup
+    return FindBlueprintByName(BlueprintPath);
+}
+
 UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)
 {
     if (!Blueprint)

@@ -40,6 +40,7 @@ public:
     // Blueprint utilities
     static UBlueprint* FindBlueprint(const FString& BlueprintName);
     static UBlueprint* FindBlueprintByName(const FString& BlueprintName);
+    static UBlueprint* FindBlueprintByPath(const FString& BlueprintPath);
     static UEdGraph* FindOrCreateEventGraph(UBlueprint* Blueprint);
     
     // Blueprint node utilities
