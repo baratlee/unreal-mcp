@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Json.h"
+#include "EdGraph/EdGraphPin.h"
 
 // Forward declarations
 class AActor;

@@ -7,6 +7,7 @@ public class UnrealMCP : ModuleRules
 	public UnrealMCP(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+		PrivatePCHHeaderFile = "UnrealMCPPCH.h";
 		// Use IWYUSupport instead of the deprecated bEnforceIWYU in UE5.5
 		IWYUSupport = IWYUSupport.Full;
 
