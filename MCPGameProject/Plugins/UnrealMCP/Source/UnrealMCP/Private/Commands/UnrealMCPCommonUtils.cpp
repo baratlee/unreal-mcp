@@ -159,23 +159,32 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintN
 
 UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByPath(const FString& BlueprintPath)
 {
-    // If path starts with /Game/, treat as full asset path
-    if (BlueprintPath.StartsWith(TEXT("/Game/")) || BlueprintPath.StartsWith(TEXT("/Engine/")))
+    // [Claude 修改] 原实现硬编码只认 /Game/ 和 /Engine/，遇到插件 content 路径
+    // (如 /AuroraDevs_UGC/) 会落到 FindBlueprintByName 去拼 /Game/Blueprints/<原串>,
+    // 导致 LoadObject 收到畸形路径并让 MCP TCP 服务崩溃。
+    // 此处放宽：任何 '/' 开头的完整路径都直接走 LoadObject，并加空串/空文件名保护。
+    if (BlueprintPath.IsEmpty())
     {
-        // Try loading with the path as-is first
-        UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
-        if (Blueprint)
+        return nullptr;
+    }
+
+    if (BlueprintPath.StartsWith(TEXT("/")))
+    {
+        if (UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintPath))
         {
             return Blueprint;
         }
 
-        // Try appending the asset name (e.g., /Game/Foo/Bar -> /Game/Foo/Bar.Bar)
-        FString AssetName = FPaths::GetBaseFilename(BlueprintPath);
-        FString FullPath = BlueprintPath + TEXT(".") + AssetName;
+        const FString AssetName = FPaths::GetBaseFilename(BlueprintPath);
+        if (AssetName.IsEmpty())
+        {
+            return nullptr;
+        }
+        const FString FullPath = BlueprintPath + TEXT(".") + AssetName;
         return LoadObject<UBlueprint>(nullptr, *FullPath);
     }
 
-    // Otherwise fall back to the default /Game/Blueprints/ lookup
+    // 不带 '/' 前缀的裸名字走老的 /Game/Blueprints/ 快捷回退
     return FindBlueprintByName(BlueprintPath);
 }
 
