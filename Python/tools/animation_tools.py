@@ -154,4 +154,99 @@ def register_animation_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def find_animations_for_skeleton(
+        ctx: Context,
+        skeleton_path: str,
+        include_montages: bool = True,
+        path_filter: str = "",
+    ) -> Dict[str, Any]:
+        """Find AnimSequence/AnimMontage assets that reference the given Skeleton.
+
+        Uses the Asset Registry, so assets do not have to be loaded. Scans the
+        whole project by default; pass `path_filter` to narrow the search to a
+        specific content path like "/Game/ThirdParty/GameAnimationSample".
+
+        Args:
+            skeleton_path: Skeleton object path, e.g.
+                "/Game/Characters/UEFN_Mannequin/Meshes/SK_UEFN_Mannequin.SK_UEFN_Mannequin"
+                (the ".LeafName" suffix may be omitted).
+            include_montages: If True, also returns AnimMontage assets. Default True.
+            path_filter: Optional content root to restrict the search.
+
+        Returns:
+            Dict with skeleton_path, include_montages, path_filter, total_count,
+            sequence_count, montage_count, and an `assets` list where each entry has
+            `path` and `class`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "find_animations_for_skeleton",
+                {
+                    "skeleton_path": skeleton_path,
+                    "include_montages": include_montages,
+                    "path_filter": path_filter,
+                },
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error finding animations for skeleton: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_skeleton_bone_hierarchy(ctx: Context, skeleton_path: str) -> Dict[str, Any]:
+        """Get the raw bone hierarchy of a USkeleton asset.
+
+        Returns each bone's index, name, parent_index, parent_name and the list of
+        direct child indices, plus any virtual bones defined on the skeleton.
+
+        Args:
+            skeleton_path: Full skeleton object path, e.g.
+                "/Game/Characters/UEFN_Mannequin/Meshes/SK_UEFN_Mannequin.SK_UEFN_Mannequin"
+
+        Returns:
+            Dict with skeleton_path, bone_count, bones list, virtual_bone_count, virtual_bones list.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_skeleton_bone_hierarchy",
+                {"skeleton_path": skeleton_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting skeleton bone hierarchy: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Animation tools registered successfully")

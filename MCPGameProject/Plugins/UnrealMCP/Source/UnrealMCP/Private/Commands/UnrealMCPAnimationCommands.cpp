@@ -11,6 +11,9 @@
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
 #include "AnimationBlueprintLibrary.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/ARFilter.h"
 #include "UObject/Package.h"
 
 FUnrealMCPAnimationCommands::FUnrealMCPAnimationCommands()
@@ -34,6 +37,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_animation_bone_track_names"))
     {
         return HandleGetAnimationBoneTrackNames(Params);
+    }
+    if (CommandType == TEXT("find_animations_for_skeleton"))
+    {
+        return HandleFindAnimationsForSkeleton(Params);
+    }
+    if (CommandType == TEXT("get_skeleton_bone_hierarchy"))
+    {
+        return HandleGetSkeletonBoneHierarchy(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -247,5 +258,190 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationBoneTrack
         Result->SetArrayField(TEXT("bone_tracks"), TrackJson);
     }
 
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleFindAnimationsForSkeleton(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path' parameter"));
+    }
+
+    bool bIncludeMontages = true;
+    Params->TryGetBoolField(TEXT("include_montages"), bIncludeMontages);
+
+    FString PathFilter;
+    Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+    // Accept both "/Game/.../SK_Foo" and "/Game/.../SK_Foo.SK_Foo" forms;
+    // normalize to the full object path since LoadObject and the AR Skeleton
+    // tag value both carry the ".LeafName" suffix.
+    FString SkeletonObjectPath = SkeletonPath;
+    {
+        int32 DotIdx = INDEX_NONE;
+        int32 SlashIdx = INDEX_NONE;
+        SkeletonObjectPath.FindLastChar('.', DotIdx);
+        SkeletonObjectPath.FindLastChar('/', SlashIdx);
+        if (DotIdx <= SlashIdx && SlashIdx != INDEX_NONE)
+        {
+            const FString LeafName = SkeletonObjectPath.Mid(SlashIdx + 1);
+            SkeletonObjectPath = SkeletonObjectPath + TEXT(".") + LeafName;
+        }
+    }
+
+    // Verify the skeleton actually exists; gives a friendlier error than returning an empty list.
+    USkeleton* SkeletonObj = LoadObject<USkeleton>(nullptr, *SkeletonObjectPath);
+    if (!SkeletonObj)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton asset not found: %s"), *SkeletonPath));
+    }
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = true;
+    Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+    if (bIncludeMontages)
+    {
+        Filter.ClassPaths.Add(UAnimMontage::StaticClass()->GetClassPathName());
+    }
+    if (PathFilter.Len() > 0)
+    {
+        Filter.PackagePaths.Add(FName(*PathFilter));
+    }
+
+    TArray<FAssetData> Candidates;
+    AssetRegistry.GetAssets(Filter, Candidates);
+
+    TArray<TSharedPtr<FJsonValue>> MatchedJson;
+    int32 SequenceCount = 0;
+    int32 MontageCount = 0;
+
+    for (const FAssetData& Asset : Candidates)
+    {
+        // The Skeleton asset registry tag is stored in ExportText form, e.g.
+        //   Skeleton'/Game/Path/SK_Foo.SK_Foo'
+        // Checking Contains on the resolved object path keeps the match robust across
+        // UE versions without needing to parse the ExportText wrapper.
+        FString TagValue;
+        if (!Asset.GetTagValue<FString>(TEXT("Skeleton"), TagValue))
+        {
+            continue;
+        }
+        if (!TagValue.Contains(SkeletonObjectPath))
+        {
+            continue;
+        }
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("path"), Asset.GetObjectPathString());
+        Entry->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+        MatchedJson.Add(MakeShared<FJsonValueObject>(Entry));
+
+        if (Asset.AssetClassPath == UAnimMontage::StaticClass()->GetClassPathName())
+        {
+            ++MontageCount;
+        }
+        else
+        {
+            ++SequenceCount;
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), SkeletonObj->GetPathName());
+    Result->SetBoolField(TEXT("include_montages"), bIncludeMontages);
+    Result->SetStringField(TEXT("path_filter"), PathFilter);
+    Result->SetNumberField(TEXT("total_count"), MatchedJson.Num());
+    Result->SetNumberField(TEXT("sequence_count"), SequenceCount);
+    Result->SetNumberField(TEXT("montage_count"), MontageCount);
+    Result->SetArrayField(TEXT("assets"), MatchedJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonBoneHierarchy(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path' parameter"));
+    }
+
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+    if (!Skeleton)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton asset not found: %s"), *SkeletonPath));
+    }
+
+    const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+    const TArray<FMeshBoneInfo>& BoneInfos = RefSkeleton.GetRawRefBoneInfo();
+    const int32 NumBones = RefSkeleton.GetRawBoneNum();
+
+    // Precompute direct children indices so each bone carries its sub-tree entry points.
+    TArray<TArray<int32>> ChildIndices;
+    ChildIndices.SetNum(NumBones);
+    for (int32 i = 0; i < NumBones; ++i)
+    {
+        const int32 ParentIdx = BoneInfos[i].ParentIndex;
+        if (ParentIdx >= 0 && ParentIdx < NumBones)
+        {
+            ChildIndices[ParentIdx].Add(i);
+        }
+    }
+
+    TArray<TSharedPtr<FJsonValue>> BonesJson;
+    BonesJson.Reserve(NumBones);
+    for (int32 i = 0; i < NumBones; ++i)
+    {
+        const FMeshBoneInfo& Info = BoneInfos[i];
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("name"), Info.Name.ToString());
+        Entry->SetNumberField(TEXT("parent_index"), Info.ParentIndex);
+        if (Info.ParentIndex >= 0 && Info.ParentIndex < NumBones)
+        {
+            Entry->SetStringField(TEXT("parent_name"), BoneInfos[Info.ParentIndex].Name.ToString());
+        }
+        else
+        {
+            Entry->SetStringField(TEXT("parent_name"), FString());
+        }
+
+        TArray<TSharedPtr<FJsonValue>> ChildrenJson;
+        ChildrenJson.Reserve(ChildIndices[i].Num());
+        for (int32 ChildIdx : ChildIndices[i])
+        {
+            ChildrenJson.Add(MakeShared<FJsonValueNumber>(ChildIdx));
+        }
+        Entry->SetArrayField(TEXT("children_indices"), ChildrenJson);
+
+        BonesJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    // Virtual bones are authored on the USkeleton and layered on top of the raw hierarchy;
+    // expose them separately so callers can tell which bones are synthetic.
+    const TArray<FVirtualBone>& VirtualBones = Skeleton->GetVirtualBones();
+    TArray<TSharedPtr<FJsonValue>> VirtualJson;
+    VirtualJson.Reserve(VirtualBones.Num());
+    for (const FVirtualBone& VB : VirtualBones)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("virtual_bone_name"), VB.VirtualBoneName.ToString());
+        Entry->SetStringField(TEXT("source_bone_name"), VB.SourceBoneName.ToString());
+        Entry->SetStringField(TEXT("target_bone_name"), VB.TargetBoneName.ToString());
+        VirtualJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+    Result->SetNumberField(TEXT("bone_count"), NumBones);
+    Result->SetArrayField(TEXT("bones"), BonesJson);
+    Result->SetNumberField(TEXT("virtual_bone_count"), VirtualBones.Num());
+    Result->SetArrayField(TEXT("virtual_bones"), VirtualJson);
     return Result;
 }

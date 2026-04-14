@@ -286,7 +286,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             else if (CommandType == TEXT("get_animation_info") ||
                      CommandType == TEXT("get_animation_notifies") ||
                      CommandType == TEXT("get_animation_curve_names") ||
-                     CommandType == TEXT("get_animation_bone_track_names"))
+                     CommandType == TEXT("get_animation_bone_track_names") ||
+                     CommandType == TEXT("find_animations_for_skeleton") ||
+                     CommandType == TEXT("get_skeleton_bone_hierarchy"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }
