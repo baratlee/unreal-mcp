@@ -153,8 +153,9 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprint(const FString& BlueprintName)
 
 UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintName)
 {
-    FString AssetPath = TEXT("/Game/Blueprints/") + BlueprintName;
-    return LoadObject<UBlueprint>(nullptr, *AssetPath);
+    // 路径感知：以 '/' 开头的串当作完整资源路径，避免拼出 /Game/Blueprints//Game/...
+    // 这种畸形包名会触发 CreatePackage 的 Fatal assert 并让 Editor 直接崩溃。
+    return FindBlueprintByPath(BlueprintName);
 }
 
 UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByPath(const FString& BlueprintPath)

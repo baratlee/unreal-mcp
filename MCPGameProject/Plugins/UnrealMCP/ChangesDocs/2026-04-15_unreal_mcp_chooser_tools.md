@@ -95,3 +95,16 @@ Editor 分支的 `PrivateDependencyModuleNames` 追加 `"Chooser"`——本批**
 - **单元格值解析**（FloatRange / Bool 掩码 / Enum / GameplayTag / Object / Output...）：本期明确不做。若要做，从 column 的 `RowValuesPropertyName()` 拿到 FName，`StructUtils::FindPropertyByName` 拿到 RowValues UProperty，再按 column 子类分支解析每种数据形态——每种 column 单独写 setter
 - **`evaluate_chooser` / `soft_asset` 两种 kind 的实测样本缺失**：项目内 7 张表都没出现，等遇到具体样本再补一次回归测试
 - 是否需要 `find_chooser_tables_by_referenced_asset`（反查某个动画/资产被哪些 ChooserTable 引用）：等具体需求出现再说
+
+## 2026-04-15 回归复测
+
+代码无改动，对当日落地的两个工具做了一次回归运行，覆盖项目里新增的 Kunlun 系列表。
+
+| 工具调用 | 结果 |
+|---|---|
+| `list_chooser_tables()` | total_count=**10**（比首次验证的 7 张多 3 张 Kunlun 表：`CHT_KL_RotationOffsetCurve` / `CHT_KL_CameraData` / `CHT_KL_MoverCharacterAnimations` / `CHT_KL_PoseSearchDatabases_Relaxed`，全部命中 `CHT_` 命名习惯） |
+| `get_chooser_table_info(CHT_TraversalMontages_Mover)` | 6 列 / 4 行 nested_chooser，与首次结果完全一致（BoolColumn → `RowValuesWithAny`，FloatRangeColumn / OutputEnumColumn → `RowValues`） |
+| `get_chooser_table_info(CHT_KL_MoverCharacterAnimations)` | **新表样本**：3 列（1 MultiEnumColumn + 2 EnumColumn）/ 8 行 全 nested_chooser，子表名为 `Stand Stopped` / `Stand Walks` / `Stand Runs` / `Stand Sprints` / `Crouch Stopped` / `Crouch Walks` / `In Air` / `Slide`，证明 MultiEnumColumn 列类型也能正常反射出 `RowValues` |
+| `get_chooser_table_info(<AnimSequence path>)` | 错误路径仍返回 `ChooserTable asset not found` |
+
+所有表 `is_cooked_data=false` / `used_cooked_results=false`，行为与首次验证完全一致。本次回归未发现回归问题，三批 8 个工具状态确认稳定。
