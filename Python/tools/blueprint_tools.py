@@ -455,4 +455,56 @@ def register_blueprint_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
-    logger.info("Blueprint tools registered successfully") 
+    @mcp.tool()
+    def get_blueprint_function_graph(
+        ctx: Context,
+        blueprint_path: str,
+        function_name: str
+    ) -> Dict[str, Any]:
+        """
+        Get the full node detail of a single function or AnimGraph inside a Blueprint.
+
+        Unlike `get_blueprint_info`, which only returns name + node_count for
+        every entry in `function_graphs`, this command expands one named graph
+        into its full node list, including pin types, default values, and
+        connection links between nodes. Works for user functions, the AnimGraph
+        of an Animation Blueprint, and EventGraph pages (looked up by name as a
+        fallback).
+
+        Args:
+            blueprint_path: Asset path of the Blueprint
+                (e.g., "/Game/Blueprints/MyABP" or just "MyABP")
+            function_name: Name of the function / AnimGraph / event graph to expand
+                (e.g., "AnimGraph", "Update_Logic", "EventGraph")
+
+        Returns:
+            Dict with blueprint_path, function_name, graph_class, node_count,
+            and a `nodes` array. Each node has the same shape as nodes returned
+            inside `event_graphs` from `get_blueprint_info`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_blueprint_function_graph", {
+                "blueprint_path": blueprint_path,
+                "function_name": function_name
+            })
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"Get blueprint function graph response received: {blueprint_path} :: {function_name}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error getting blueprint function graph: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    logger.info("Blueprint tools registered successfully")

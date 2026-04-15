@@ -26,6 +26,93 @@
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CallFunction.h"
 
+namespace
+{
+    // Serialize a single UEdGraphNode (and its pin links) to a JSON object.
+    // Shared between HandleGetBlueprintInfo and HandleGetBlueprintFunctionGraph
+    // so the two commands always agree on node/pin shape.
+    TSharedPtr<FJsonObject> SerializeGraphNodeToJson(UEdGraphNode* Node)
+    {
+        TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+        if (!Node)
+        {
+            return NodeObj;
+        }
+
+        NodeObj->SetStringField(TEXT("guid"), Node->NodeGuid.ToString());
+        NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+        NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+        NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+        NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+        if (!Node->NodeComment.IsEmpty())
+        {
+            NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
+        }
+
+        if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+        {
+            NodeObj->SetStringField(TEXT("event_name"),
+                EventNode->EventReference.GetMemberName().ToString());
+        }
+
+        if (UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node))
+        {
+            NodeObj->SetStringField(TEXT("function_name"),
+                FuncNode->FunctionReference.GetMemberName().ToString());
+            if (UClass* OwnerClass = FuncNode->FunctionReference.GetMemberParentClass())
+            {
+                NodeObj->SetStringField(TEXT("function_owner"), OwnerClass->GetName());
+            }
+        }
+
+        TArray<TSharedPtr<FJsonValue>> PinsArray;
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (!Pin) continue;
+
+            TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+            PinObj->SetStringField(TEXT("direction"),
+                Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+
+            if (Pin->PinType.PinSubCategoryObject.IsValid())
+            {
+                PinObj->SetStringField(TEXT("sub_type"),
+                    Pin->PinType.PinSubCategoryObject->GetName());
+            }
+
+            if (!Pin->DefaultValue.IsEmpty())
+            {
+                PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+            }
+
+            if (Pin->LinkedTo.Num() > 0)
+            {
+                TArray<TSharedPtr<FJsonValue>> LinksArray;
+                for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                {
+                    if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+
+                    TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
+                    LinkObj->SetStringField(TEXT("node_guid"),
+                        LinkedPin->GetOwningNode()->NodeGuid.ToString());
+                    LinkObj->SetStringField(TEXT("pin_name"),
+                        LinkedPin->PinName.ToString());
+                    LinksArray.Add(MakeShared<FJsonValueObject>(LinkObj));
+                }
+                PinObj->SetArrayField(TEXT("links"), LinksArray);
+            }
+
+            PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+        }
+        NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+        return NodeObj;
+    }
+}
+
 FUnrealMCPBlueprintCommands::FUnrealMCPBlueprintCommands()
 {
 }
@@ -71,6 +158,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("get_blueprint_info"))
     {
         return HandleGetBlueprintInfo(Params);
+    }
+    else if (CommandType == TEXT("get_blueprint_function_graph"))
+    {
+        return HandleGetBlueprintFunctionGraph(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -1330,83 +1421,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
         for (UEdGraphNode* Node : Graph->Nodes)
         {
             if (!Node) continue;
-
-            TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
-            NodeObj->SetStringField(TEXT("guid"), Node->NodeGuid.ToString());
-            NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
-            NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-            NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
-            NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
-
-            if (!Node->NodeComment.IsEmpty())
-            {
-                NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
-            }
-
-            // Event nodes - extract event name
-            if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
-            {
-                NodeObj->SetStringField(TEXT("event_name"),
-                    EventNode->EventReference.GetMemberName().ToString());
-            }
-
-            // Function call nodes - extract function name
-            if (UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node))
-            {
-                NodeObj->SetStringField(TEXT("function_name"),
-                    FuncNode->FunctionReference.GetMemberName().ToString());
-                if (UClass* OwnerClass = FuncNode->FunctionReference.GetMemberParentClass())
-                {
-                    NodeObj->SetStringField(TEXT("function_owner"), OwnerClass->GetName());
-                }
-            }
-
-            // Pins
-            TArray<TSharedPtr<FJsonValue>> PinsArray;
-            for (UEdGraphPin* Pin : Node->Pins)
-            {
-                if (!Pin) continue;
-
-                TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
-                PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
-                PinObj->SetStringField(TEXT("direction"),
-                    Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
-                PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
-
-                if (Pin->PinType.PinSubCategoryObject.IsValid())
-                {
-                    PinObj->SetStringField(TEXT("sub_type"),
-                        Pin->PinType.PinSubCategoryObject->GetName());
-                }
-
-                if (!Pin->DefaultValue.IsEmpty())
-                {
-                    PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
-                }
-
-                // Connected pins
-                if (Pin->LinkedTo.Num() > 0)
-                {
-                    TArray<TSharedPtr<FJsonValue>> LinksArray;
-                    for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-                    {
-                        if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
-
-                        TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
-                        LinkObj->SetStringField(TEXT("node_guid"),
-                            LinkedPin->GetOwningNode()->NodeGuid.ToString());
-                        LinkObj->SetStringField(TEXT("pin_name"),
-                            LinkedPin->PinName.ToString());
-                        LinksArray.Add(MakeShared<FJsonValueObject>(LinkObj));
-                    }
-                    PinObj->SetArrayField(TEXT("links"), LinksArray);
-                }
-
-                PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
-            }
-            NodeObj->SetArrayField(TEXT("pins"), PinsArray);
-
-            NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+            NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node)));
         }
         GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
 
@@ -1450,4 +1465,83 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
     ResultObj->SetArrayField(TEXT("function_graphs"), FuncGraphsArray);
 
     return ResultObj;
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+
+    FString FunctionName;
+    if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+    }
+
+    // AnimGraph and user functions both live in FunctionGraphs; UbergraphPages
+    // holds the EventGraph(s). Search FunctionGraphs first, then Ubergraph as
+    // a fallback so callers can also retrieve EventGraph node detail by name.
+    UEdGraph* TargetGraph = nullptr;
+    for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+    {
+        if (Graph && Graph->GetName() == FunctionName)
+        {
+            TargetGraph = Graph;
+            break;
+        }
+    }
+    if (!TargetGraph)
+    {
+        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        {
+            if (Graph && Graph->GetName() == FunctionName)
+            {
+                TargetGraph = Graph;
+                break;
+            }
+        }
+    }
+
+    if (!TargetGraph)
+    {
+        TArray<FString> AvailableNames;
+        for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+        {
+            if (Graph) AvailableNames.Add(Graph->GetName());
+        }
+        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        {
+            if (Graph) AvailableNames.Add(Graph->GetName());
+        }
+        const FString Joined = FString::Join(AvailableNames, TEXT(", "));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Function graph '%s' not found in blueprint '%s'. Available graphs: [%s]"),
+                *FunctionName, *BlueprintPath, *Joined));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    ResultObj->SetStringField(TEXT("function_name"), TargetGraph->GetName());
+    ResultObj->SetStringField(TEXT("graph_class"), TargetGraph->GetClass()->GetName());
+    ResultObj->SetNumberField(TEXT("node_count"), TargetGraph->Nodes.Num());
+
+    TArray<TSharedPtr<FJsonValue>> NodesArray;
+    for (UEdGraphNode* Node : TargetGraph->Nodes)
+    {
+        if (!Node) continue;
+        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node)));
+    }
+    ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
+
+    return ResultObj;
+}

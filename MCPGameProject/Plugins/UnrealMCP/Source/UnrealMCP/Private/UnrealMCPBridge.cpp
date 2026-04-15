@@ -250,7 +250,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_blueprint_property") ||
                      CommandType == TEXT("set_static_mesh_properties") ||
                      CommandType == TEXT("set_pawn_properties") ||
-                     CommandType == TEXT("get_blueprint_info"))
+                     CommandType == TEXT("get_blueprint_info") ||
+                     CommandType == TEXT("get_blueprint_function_graph"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }
@@ -287,6 +288,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_animation_notifies") ||
                      CommandType == TEXT("get_animation_curve_names") ||
                      CommandType == TEXT("get_animation_bone_track_names") ||
+                     CommandType == TEXT("get_montage_composite_info") ||
                      CommandType == TEXT("find_animations_for_skeleton") ||
                      CommandType == TEXT("get_skeleton_bone_hierarchy") ||
                      CommandType == TEXT("list_chooser_tables") ||

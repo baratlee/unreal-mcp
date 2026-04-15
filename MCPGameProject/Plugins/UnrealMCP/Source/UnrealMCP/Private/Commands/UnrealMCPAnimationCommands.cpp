@@ -47,6 +47,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     {
         return HandleGetAnimationBoneTrackNames(Params);
     }
+    if (CommandType == TEXT("get_montage_composite_info"))
+    {
+        return HandleGetMontageCompositeInfo(Params);
+    }
     if (CommandType == TEXT("find_animations_for_skeleton"))
     {
         return HandleFindAnimationsForSkeleton(Params);
@@ -969,6 +973,112 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetIKRetargeterInfo(c
     }
     Result->SetNumberField(TEXT("profile_count"), ProfileNames.Num());
     Result->SetArrayField(TEXT("profiles"), ProfilesJson);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetMontageCompositeInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *AssetPath);
+    if (!Montage)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("AnimMontage asset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetStringField(TEXT("asset_class"), Montage->GetClass()->GetName());
+    Result->SetNumberField(TEXT("play_length"), Montage->GetPlayLength());
+    Result->SetBoolField(TEXT("is_loop"), Montage->bLoop);
+    Result->SetNumberField(TEXT("blend_in_time"), Montage->BlendIn.GetBlendTime());
+    Result->SetNumberField(TEXT("blend_out_time"), Montage->BlendOut.GetBlendTime());
+    Result->SetNumberField(TEXT("blend_out_trigger_time"), Montage->BlendOutTriggerTime);
+    Result->SetBoolField(TEXT("enable_auto_blend_out"), Montage->bEnableAutoBlendOut);
+
+    if (const USkeleton* Skeleton = Montage->GetSkeleton())
+    {
+        Result->SetStringField(TEXT("skeleton"), Skeleton->GetPathName());
+    }
+    else
+    {
+        Result->SetStringField(TEXT("skeleton"), FString());
+    }
+
+    TArray<TSharedPtr<FJsonValue>> SectionsJson;
+    SectionsJson.Reserve(Montage->CompositeSections.Num());
+    for (int32 SectionIdx = 0; SectionIdx < Montage->CompositeSections.Num(); ++SectionIdx)
+    {
+        const FCompositeSection& Section = Montage->CompositeSections[SectionIdx];
+        TSharedPtr<FJsonObject> SectionEntry = MakeShared<FJsonObject>();
+        SectionEntry->SetNumberField(TEXT("section_index"), SectionIdx);
+        SectionEntry->SetStringField(TEXT("section_name"), Section.SectionName.ToString());
+        SectionEntry->SetNumberField(TEXT("start_time"), Section.GetTime());
+        SectionEntry->SetNumberField(TEXT("segment_length"), Montage->GetSectionLength(SectionIdx));
+        SectionEntry->SetStringField(TEXT("next_section_name"), Section.NextSectionName.ToString());
+        SectionsJson.Add(MakeShared<FJsonValueObject>(SectionEntry));
+    }
+    Result->SetNumberField(TEXT("section_count"), Montage->CompositeSections.Num());
+    Result->SetArrayField(TEXT("sections"), SectionsJson);
+
+    TArray<TSharedPtr<FJsonValue>> SlotsJson;
+    SlotsJson.Reserve(Montage->SlotAnimTracks.Num());
+    for (int32 SlotIdx = 0; SlotIdx < Montage->SlotAnimTracks.Num(); ++SlotIdx)
+    {
+        const FSlotAnimationTrack& SlotTrack = Montage->SlotAnimTracks[SlotIdx];
+
+        TArray<TSharedPtr<FJsonValue>> SegmentsJson;
+        SegmentsJson.Reserve(SlotTrack.AnimTrack.AnimSegments.Num());
+        for (int32 SegIdx = 0; SegIdx < SlotTrack.AnimTrack.AnimSegments.Num(); ++SegIdx)
+        {
+            const FAnimSegment& Segment = SlotTrack.AnimTrack.AnimSegments[SegIdx];
+            TSharedPtr<FJsonObject> SegEntry = MakeShared<FJsonObject>();
+            SegEntry->SetNumberField(TEXT("segment_index"), SegIdx);
+
+            const UAnimSequenceBase* SegAnim = Segment.GetAnimReference();
+            SegEntry->SetStringField(TEXT("anim_path"), SegAnim ? SegAnim->GetPathName() : FString());
+            SegEntry->SetStringField(TEXT("anim_class"), SegAnim ? SegAnim->GetClass()->GetName() : FString());
+
+            SegEntry->SetNumberField(TEXT("start_pos"), Segment.StartPos);
+            SegEntry->SetNumberField(TEXT("end_pos"), Segment.GetEndPos());
+            SegEntry->SetNumberField(TEXT("length"), Segment.GetLength());
+            SegEntry->SetNumberField(TEXT("anim_start_time"), Segment.AnimStartTime);
+            SegEntry->SetNumberField(TEXT("anim_end_time"), Segment.AnimEndTime);
+            SegEntry->SetNumberField(TEXT("play_rate"), Segment.AnimPlayRate);
+            SegEntry->SetNumberField(TEXT("loop_count"), Segment.LoopingCount);
+
+            SegmentsJson.Add(MakeShared<FJsonValueObject>(SegEntry));
+        }
+
+        TSharedPtr<FJsonObject> SlotEntry = MakeShared<FJsonObject>();
+        SlotEntry->SetNumberField(TEXT("slot_index"), SlotIdx);
+        SlotEntry->SetStringField(TEXT("slot_name"), SlotTrack.SlotName.ToString());
+        SlotEntry->SetNumberField(TEXT("segment_count"), SlotTrack.AnimTrack.AnimSegments.Num());
+        SlotEntry->SetArrayField(TEXT("segments"), SegmentsJson);
+        SlotsJson.Add(MakeShared<FJsonValueObject>(SlotEntry));
+    }
+    Result->SetNumberField(TEXT("slot_count"), Montage->SlotAnimTracks.Num());
+    Result->SetArrayField(TEXT("slot_anim_tracks"), SlotsJson);
+
+    TArray<TSharedPtr<FJsonValue>> NotifyTracksJson;
+#if WITH_EDITORONLY_DATA
+    NotifyTracksJson.Reserve(Montage->AnimNotifyTracks.Num());
+    for (int32 TrackIdx = 0; TrackIdx < Montage->AnimNotifyTracks.Num(); ++TrackIdx)
+    {
+        const FAnimNotifyTrack& Track = Montage->AnimNotifyTracks[TrackIdx];
+        TSharedPtr<FJsonObject> TrackEntry = MakeShared<FJsonObject>();
+        TrackEntry->SetNumberField(TEXT("track_index"), TrackIdx);
+        TrackEntry->SetStringField(TEXT("track_name"), Track.TrackName.ToString());
+        NotifyTracksJson.Add(MakeShared<FJsonValueObject>(TrackEntry));
+    }
+#endif
+    Result->SetNumberField(TEXT("notify_track_count"), NotifyTracksJson.Num());
+    Result->SetArrayField(TEXT("notify_tracks"), NotifyTracksJson);
 
     return Result;
 }

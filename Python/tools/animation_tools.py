@@ -155,6 +155,54 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_montage_composite_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Get UAnimMontage composite structure: sections, slot anim tracks, segments, blends.
+
+        Editor-only, structure read. Only accepts UAnimMontage paths — passing an
+        AnimSequence will return an error.
+
+        Args:
+            asset_path: Full asset path, e.g. "/Game/Animations/Montage_Attack.Montage_Attack"
+
+        Returns:
+            Dict with:
+              asset_path, asset_class, skeleton, play_length, is_loop,
+              blend_in_time, blend_out_time, blend_out_trigger_time, enable_auto_blend_out,
+              section_count, sections[]:
+                  section_index, section_name, start_time, segment_length,
+                  next_section_name, link_value
+              slot_count, slot_anim_tracks[]:
+                  slot_index, slot_name, segment_count,
+                  segments[]:
+                      segment_index, anim_path, anim_class,
+                      start_pos, end_pos, length,
+                      anim_start_time, anim_end_time, play_rate, loop_count
+              notify_track_count, notify_tracks[]: track_index, track_name
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_montage_composite_info", {"asset_path": asset_path})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting montage composite info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def find_animations_for_skeleton(
         ctx: Context,
         skeleton_path: str,
