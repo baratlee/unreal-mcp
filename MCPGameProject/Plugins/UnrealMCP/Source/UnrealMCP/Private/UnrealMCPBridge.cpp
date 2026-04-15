@@ -288,7 +288,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_animation_curve_names") ||
                      CommandType == TEXT("get_animation_bone_track_names") ||
                      CommandType == TEXT("find_animations_for_skeleton") ||
-                     CommandType == TEXT("get_skeleton_bone_hierarchy"))
+                     CommandType == TEXT("get_skeleton_bone_hierarchy") ||
+                     CommandType == TEXT("list_chooser_tables") ||
+                     CommandType == TEXT("get_chooser_table_info"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

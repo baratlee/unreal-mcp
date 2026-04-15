@@ -249,4 +249,96 @@ def register_animation_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def list_chooser_tables(ctx: Context, path_filter: str = "") -> Dict[str, Any]:
+        """List all UChooserTable assets in the project via the Asset Registry.
+
+        Scans the whole project by default; pass `path_filter` to narrow the
+        search to a specific content path such as
+        "/Game/ThirdParty/GameAnimationSample".
+
+        Args:
+            path_filter: Optional content root to restrict the search.
+
+        Returns:
+            Dict with path_filter, total_count, and an `assets` list where each
+            entry has `path` and `class`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "list_chooser_tables",
+                {"path_filter": path_filter},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error listing chooser tables: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_chooser_table_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read the static structure of a UChooserTable asset (Editor-only, read-only).
+
+        Returns the column list (each column's struct name and editor-only
+        RowValues property name) and the result rows. Each result row is
+        classified by its FObjectChooserBase subclass:
+
+        - `asset`            → row's `asset_path` / `asset_class` point at a hard UObject reference
+        - `soft_asset`       → row's `soft_path` holds a TSoftObjectPtr
+        - `evaluate_chooser` → row references another ChooserTable (`nested_chooser_path`)
+        - `nested_chooser`   → row references another ChooserTable (`nested_chooser_path`)
+        - `unknown` / `empty` → unrecognised or uninitialised row
+
+        Per-cell condition values (float ranges, bool masks, gameplay tags, etc.)
+        are NOT returned; only the structural outline of the table is exposed.
+
+        Args:
+            asset_path: Full ChooserTable object path, e.g.
+                "/Game/.../CT_Locomotion.CT_Locomotion"
+
+        Returns:
+            Dict with asset_path, asset_class, is_cooked_data, column_count,
+            columns list, row_count, used_cooked_results, results list.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_chooser_table_info",
+                {"asset_path": asset_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting chooser table info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Animation tools registered successfully")

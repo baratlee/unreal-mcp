@@ -15,6 +15,11 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/ARFilter.h"
 #include "UObject/Package.h"
+#include "StructUtils/InstancedStruct.h"
+#include "Chooser.h"
+#include "IObjectChooser.h"
+#include "IChooserColumn.h"
+#include "ObjectChooser_Asset.h"
 
 FUnrealMCPAnimationCommands::FUnrealMCPAnimationCommands()
 {
@@ -45,6 +50,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_skeleton_bone_hierarchy"))
     {
         return HandleGetSkeletonBoneHierarchy(Params);
+    }
+    if (CommandType == TEXT("list_chooser_tables"))
+    {
+        return HandleListChooserTables(Params);
+    }
+    if (CommandType == TEXT("get_chooser_table_info"))
+    {
+        return HandleGetChooserTableInfo(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -443,5 +456,168 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonBoneHierar
     Result->SetArrayField(TEXT("bones"), BonesJson);
     Result->SetNumberField(TEXT("virtual_bone_count"), VirtualBones.Num());
     Result->SetArrayField(TEXT("virtual_bones"), VirtualJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListChooserTables(const TSharedPtr<FJsonObject>& Params)
+{
+    FString PathFilter;
+    Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = true;
+    Filter.ClassPaths.Add(UChooserTable::StaticClass()->GetClassPathName());
+    if (PathFilter.Len() > 0)
+    {
+        Filter.PackagePaths.Add(FName(*PathFilter));
+    }
+
+    TArray<FAssetData> Assets;
+    AssetRegistry.GetAssets(Filter, Assets);
+
+    TArray<TSharedPtr<FJsonValue>> AssetsJson;
+    AssetsJson.Reserve(Assets.Num());
+    for (const FAssetData& Asset : Assets)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("path"), Asset.GetObjectPathString());
+        Entry->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+        AssetsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path_filter"), PathFilter);
+    Result->SetNumberField(TEXT("total_count"), Assets.Num());
+    Result->SetArrayField(TEXT("assets"), AssetsJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
+    if (!Table)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("ChooserTable asset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetStringField(TEXT("asset_class"), Table->GetClass()->GetName());
+    Result->SetBoolField(TEXT("is_cooked_data"), Table->IsCookedData());
+
+    // Columns: one entry per ColumnsStructs slot. We output the column's struct name
+    // and (editor-only) the reflected RowValues property name so callers can tell
+    // which column kind it is without loading the Chooser module themselves.
+    TArray<TSharedPtr<FJsonValue>> ColumnsJson;
+    ColumnsJson.Reserve(Table->ColumnsStructs.Num());
+    for (int32 i = 0; i < Table->ColumnsStructs.Num(); ++i)
+    {
+        FInstancedStruct& ColInst = Table->ColumnsStructs[i];
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("struct_name"), ColStruct ? ColStruct->GetName() : FString());
+
+#if WITH_EDITOR
+        if (ColStruct && ColInst.IsValid())
+        {
+            FChooserColumnBase& ColBase = ColInst.GetMutable<FChooserColumnBase>();
+            Entry->SetStringField(TEXT("row_values_property"), ColBase.RowValuesPropertyName().ToString());
+        }
+#endif
+
+        ColumnsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("column_count"), Table->ColumnsStructs.Num());
+    Result->SetArrayField(TEXT("columns"), ColumnsJson);
+
+    // Results: ResultsStructs carries the authored row order (editor-only). For a
+    // cooked asset that array is gone and CookedResults takes over, so fall through
+    // to it when the authored data is empty.
+    TArrayView<const FInstancedStruct> ResultsView;
+    bool bUsedCooked = false;
+#if WITH_EDITORONLY_DATA
+    if (Table->ResultsStructs.Num() > 0)
+    {
+        ResultsView = MakeArrayView(Table->ResultsStructs.GetData(), Table->ResultsStructs.Num());
+    }
+    else
+#endif
+    {
+        ResultsView = MakeArrayView(Table->CookedResults.GetData(), Table->CookedResults.Num());
+        bUsedCooked = true;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ResultsJson;
+    ResultsJson.Reserve(ResultsView.Num());
+    for (int32 i = 0; i < ResultsView.Num(); ++i)
+    {
+        const FInstancedStruct& ResultInst = ResultsView[i];
+        const UScriptStruct* RStruct = ResultInst.GetScriptStruct();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("struct_name"), RStruct ? RStruct->GetName() : FString());
+
+        if (!RStruct || !ResultInst.IsValid())
+        {
+            Entry->SetStringField(TEXT("kind"), TEXT("empty"));
+        }
+        else if (RStruct == FAssetChooser::StaticStruct())
+        {
+            const FAssetChooser& Ch = ResultInst.Get<FAssetChooser>();
+            Entry->SetStringField(TEXT("kind"), TEXT("asset"));
+            if (Ch.Asset)
+            {
+                Entry->SetStringField(TEXT("asset_path"), Ch.Asset->GetPathName());
+                Entry->SetStringField(TEXT("asset_class"), Ch.Asset->GetClass()->GetName());
+            }
+        }
+        else if (RStruct == FSoftAssetChooser::StaticStruct())
+        {
+            const FSoftAssetChooser& Ch = ResultInst.Get<FSoftAssetChooser>();
+            Entry->SetStringField(TEXT("kind"), TEXT("soft_asset"));
+            Entry->SetStringField(TEXT("soft_path"), Ch.Asset.ToString());
+        }
+        else if (RStruct == FEvaluateChooser::StaticStruct())
+        {
+            const FEvaluateChooser& Ch = ResultInst.Get<FEvaluateChooser>();
+            Entry->SetStringField(TEXT("kind"), TEXT("evaluate_chooser"));
+            if (Ch.Chooser)
+            {
+                Entry->SetStringField(TEXT("nested_chooser_path"), Ch.Chooser->GetPathName());
+            }
+        }
+        else if (RStruct == FNestedChooser::StaticStruct())
+        {
+            const FNestedChooser& Ch = ResultInst.Get<FNestedChooser>();
+            Entry->SetStringField(TEXT("kind"), TEXT("nested_chooser"));
+            if (Ch.Chooser)
+            {
+                Entry->SetStringField(TEXT("nested_chooser_path"), Ch.Chooser->GetPathName());
+            }
+        }
+        else
+        {
+            Entry->SetStringField(TEXT("kind"), TEXT("unknown"));
+        }
+
+        ResultsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    Result->SetNumberField(TEXT("row_count"), ResultsView.Num());
+    Result->SetBoolField(TEXT("used_cooked_results"), bUsedCooked);
+    Result->SetArrayField(TEXT("results"), ResultsJson);
     return Result;
 }

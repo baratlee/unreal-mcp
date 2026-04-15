@@ -21,4 +21,6 @@ private:
     TSharedPtr<FJsonObject> HandleGetAnimationBoneTrackNames(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFindAnimationsForSkeleton(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSkeletonBoneHierarchy(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleListChooserTables(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params);
 };
