@@ -28,10 +28,37 @@
 
 namespace
 {
+    // How much pin payload to serialize. AnimGraph nodes carry InstancedStruct
+    // text in DefaultValue that can be multi-KB per pin and easily blow past
+    // the MCP socket response timeout, so callers can opt into a smaller shape.
+    enum class EPinPayloadMode : uint8
+    {
+        Full,       // Verbatim DefaultValue (existing behavior).
+        Summary,    // DefaultValue truncated to a short preview when long.
+        NamesOnly,  // DefaultValue dropped entirely; keep type/links only.
+    };
+
+    EPinPayloadMode ParsePinPayloadMode(const FString& Raw)
+    {
+        if (Raw.Equals(TEXT("summary"), ESearchCase::IgnoreCase))
+        {
+            return EPinPayloadMode::Summary;
+        }
+        if (Raw.Equals(TEXT("names_only"), ESearchCase::IgnoreCase))
+        {
+            return EPinPayloadMode::NamesOnly;
+        }
+        return EPinPayloadMode::Full;
+    }
+
+    // Threshold and preview length used by Summary mode.
+    constexpr int32 GPinSummaryThreshold = 256;
+    constexpr int32 GPinSummaryPreviewLen = 96;
+
     // Serialize a single UEdGraphNode (and its pin links) to a JSON object.
     // Shared between HandleGetBlueprintInfo and HandleGetBlueprintFunctionGraph
     // so the two commands always agree on node/pin shape.
-    TSharedPtr<FJsonObject> SerializeGraphNodeToJson(UEdGraphNode* Node)
+    TSharedPtr<FJsonObject> SerializeGraphNodeToJson(UEdGraphNode* Node, EPinPayloadMode Mode = EPinPayloadMode::Full)
     {
         TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
         if (!Node)
@@ -85,7 +112,28 @@ namespace
 
             if (!Pin->DefaultValue.IsEmpty())
             {
-                PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+                switch (Mode)
+                {
+                case EPinPayloadMode::Full:
+                    PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+                    break;
+                case EPinPayloadMode::Summary:
+                    if (Pin->DefaultValue.Len() <= GPinSummaryThreshold)
+                    {
+                        PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+                    }
+                    else
+                    {
+                        PinObj->SetNumberField(TEXT("default_value_len"), Pin->DefaultValue.Len());
+                        PinObj->SetStringField(TEXT("default_value_preview"),
+                            Pin->DefaultValue.Left(GPinSummaryPreviewLen));
+                        PinObj->SetBoolField(TEXT("default_value_truncated"), true);
+                    }
+                    break;
+                case EPinPayloadMode::NamesOnly:
+                    // Drop DefaultValue entirely.
+                    break;
+                }
             }
 
             if (Pin->LinkedTo.Num() > 0)
@@ -1481,6 +1529,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
     }
 
+    FString PinPayloadModeRaw;
+    Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadModeRaw);
+    const EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadModeRaw);
+
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
     if (!Blueprint)
     {
@@ -1539,7 +1591,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     for (UEdGraphNode* Node : TargetGraph->Nodes)
     {
         if (!Node) continue;
-        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node)));
+        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
 

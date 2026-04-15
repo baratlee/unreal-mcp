@@ -89,14 +89,31 @@ uint32 FMCPServerRunnable::Run()
                                 // Log response for debugging
                                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
                                 
-                                // Send response
-                                int32 BytesSent = 0;
-                                if (!ClientSocket->Send((uint8*)TCHAR_TO_UTF8(*Response), Response.Len(), BytesSent))
+                                // Send response — loop on partial sends, use real UTF-8 byte length
+                                FTCHARToUTF8 Utf8Converter(*Response);
+                                const uint8* Utf8Data = (const uint8*)Utf8Converter.Get();
+                                int32 TotalBytes = Utf8Converter.Length();
+                                int32 TotalSent = 0;
+                                bool bSendOk = true;
+                                while (TotalSent < TotalBytes)
                                 {
-                                    UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Failed to send response"));
+                                    int32 BytesSent = 0;
+                                    if (!ClientSocket->Send(Utf8Data + TotalSent, TotalBytes - TotalSent, BytesSent))
+                                    {
+                                        UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Failed to send response (sent %d/%d)"), TotalSent, TotalBytes);
+                                        bSendOk = false;
+                                        break;
+                                    }
+                                    if (BytesSent <= 0)
+                                    {
+                                        FPlatformProcess::Sleep(0.001f);
+                                        continue;
+                                    }
+                                    TotalSent += BytesSent;
                                 }
-                                else {
-                                    UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Response sent successfully, bytes: %d"), BytesSent);
+                                if (bSendOk)
+                                {
+                                    UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Response sent successfully (TCHARLen=%d, UTF8Bytes=%d, Sent=%d)"), Response.Len(), TotalBytes, TotalSent);
                                 }
                             }
                             else
@@ -308,14 +325,28 @@ void FMCPServerRunnable::ProcessMessage(TSharedPtr<FSocket> Client, const FStrin
     // Execute command
     FString Response = Bridge->ExecuteCommand(CommandType, Params);
     
-    // Send response with newline terminator
+    // Send response with newline terminator — loop on partial sends, use real UTF-8 byte length
     Response += TEXT("\n");
-    int32 BytesSent = 0;
-    
     UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
-    
-    if (!Client->Send((uint8*)TCHAR_TO_UTF8(*Response), Response.Len(), BytesSent))
+
+    FTCHARToUTF8 Utf8Converter(*Response);
+    const uint8* Utf8Data = (const uint8*)Utf8Converter.Get();
+    int32 TotalBytes = Utf8Converter.Length();
+    int32 TotalSent = 0;
+    while (TotalSent < TotalBytes)
     {
-        UE_LOG(LogTemp, Error, TEXT("MCPServerRunnable: Failed to send response"));
+        int32 BytesSent = 0;
+        if (!Client->Send(Utf8Data + TotalSent, TotalBytes - TotalSent, BytesSent))
+        {
+            UE_LOG(LogTemp, Error, TEXT("MCPServerRunnable: Failed to send response (sent %d/%d)"), TotalSent, TotalBytes);
+            return;
+        }
+        if (BytesSent <= 0)
+        {
+            FPlatformProcess::Sleep(0.001f);
+            continue;
+        }
+        TotalSent += BytesSent;
     }
+    UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: ProcessMessage response sent (TCHARLen=%d, UTF8Bytes=%d, Sent=%d)"), Response.Len(), TotalBytes, TotalSent);
 } 

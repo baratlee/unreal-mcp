@@ -459,7 +459,8 @@ def register_blueprint_tools(mcp: FastMCP):
     def get_blueprint_function_graph(
         ctx: Context,
         blueprint_path: str,
-        function_name: str
+        function_name: str,
+        pin_payload_mode: str = "full"
     ) -> Dict[str, Any]:
         """
         Get the full node detail of a single function or AnimGraph inside a Blueprint.
@@ -476,6 +477,17 @@ def register_blueprint_tools(mcp: FastMCP):
                 (e.g., "/Game/Blueprints/MyABP" or just "MyABP")
             function_name: Name of the function / AnimGraph / event graph to expand
                 (e.g., "AnimGraph", "Update_Logic", "EventGraph")
+            pin_payload_mode: How much pin payload to include. AnimGraph nodes
+                often carry multi-KB InstancedStruct text in DefaultValue and
+                can blow past the MCP socket timeout in "full" mode. Options:
+                  - "full"       : verbatim DefaultValue (default, original behavior)
+                  - "summary"    : DefaultValue truncated to a 96-char preview
+                                   when longer than 256 chars; adds
+                                   default_value_len / default_value_preview /
+                                   default_value_truncated fields instead
+                  - "names_only" : drop DefaultValue entirely; keep type / links only
+                Use "summary" or "names_only" when reading AnimGraph or other
+                large graphs that time out in full mode.
 
         Returns:
             Dict with blueprint_path, function_name, graph_class, node_count,
@@ -492,7 +504,8 @@ def register_blueprint_tools(mcp: FastMCP):
 
             response = unreal.send_command("get_blueprint_function_graph", {
                 "blueprint_path": blueprint_path,
-                "function_name": function_name
+                "function_name": function_name,
+                "pin_payload_mode": pin_payload_mode
             })
 
             if not response:
