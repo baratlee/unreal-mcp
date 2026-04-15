@@ -20,6 +20,10 @@
 #include "IObjectChooser.h"
 #include "IChooserColumn.h"
 #include "ObjectChooser_Asset.h"
+#include "Rig/IKRigDefinition.h"
+#include "Retargeter/IKRetargeter.h"
+#include "Retargeter/IKRetargetProfile.h"
+#include "UObject/UnrealType.h"
 
 FUnrealMCPAnimationCommands::FUnrealMCPAnimationCommands()
 {
@@ -58,6 +62,26 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_chooser_table_info"))
     {
         return HandleGetChooserTableInfo(Params);
+    }
+    if (CommandType == TEXT("get_skeleton_retarget_modes"))
+    {
+        return HandleGetSkeletonRetargetModes(Params);
+    }
+    if (CommandType == TEXT("list_ik_rigs"))
+    {
+        return HandleListIKRigs(Params);
+    }
+    if (CommandType == TEXT("get_ik_rig_info"))
+    {
+        return HandleGetIKRigInfo(Params);
+    }
+    if (CommandType == TEXT("list_ik_retargeters"))
+    {
+        return HandleListIKRetargeters(Params);
+    }
+    if (CommandType == TEXT("get_ik_retargeter_info"))
+    {
+        return HandleGetIKRetargeterInfo(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -619,5 +643,332 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(c
     Result->SetNumberField(TEXT("row_count"), ResultsView.Num());
     Result->SetBoolField(TEXT("used_cooked_results"), bUsedCooked);
     Result->SetArrayField(TEXT("results"), ResultsJson);
+    return Result;
+}
+
+namespace
+{
+    static FString BoneTranslationRetargetingModeToString(EBoneTranslationRetargetingMode::Type Mode)
+    {
+        switch (Mode)
+        {
+            case EBoneTranslationRetargetingMode::Animation:         return TEXT("Animation");
+            case EBoneTranslationRetargetingMode::Skeleton:          return TEXT("Skeleton");
+            case EBoneTranslationRetargetingMode::AnimationScaled:   return TEXT("AnimationScaled");
+            case EBoneTranslationRetargetingMode::AnimationRelative: return TEXT("AnimationRelative");
+            case EBoneTranslationRetargetingMode::OrientAndScale:    return TEXT("OrientAndScale");
+            default:                                                 return TEXT("Unknown");
+        }
+    }
+
+    // UIKRetargeter keeps its retarget pose maps and Profiles map private with only
+    // a UIKRetargeterController friend, so we read them via reflection (FProperty).
+    // Returns the keys (FName) of a TMap<FName, ?> UPROPERTY by name; values are not
+    // touched here to keep the helper agnostic to the value struct type.
+    static TArray<FName> ReadNameKeysFromMapProperty(const UObject* Owner, FName PropName)
+    {
+        TArray<FName> OutKeys;
+        if (!Owner)
+        {
+            return OutKeys;
+        }
+        FMapProperty* MapProp = CastField<FMapProperty>(Owner->GetClass()->FindPropertyByName(PropName));
+        if (!MapProp)
+        {
+            return OutKeys;
+        }
+        const void* MapAddr = MapProp->ContainerPtrToValuePtr<void>(Owner);
+        FScriptMapHelper Helper(MapProp, MapAddr);
+        for (int32 i = 0; i < Helper.GetMaxIndex(); ++i)
+        {
+            if (!Helper.IsValidIndex(i))
+            {
+                continue;
+            }
+            const FName* KeyPtr = reinterpret_cast<const FName*>(Helper.GetKeyPtr(i));
+            if (KeyPtr)
+            {
+                OutKeys.Add(*KeyPtr);
+            }
+        }
+        return OutKeys;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonRetargetModes(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path' parameter"));
+    }
+
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+    if (!Skeleton)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton asset not found: %s"), *SkeletonPath));
+    }
+
+    const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+    const TArray<FMeshBoneInfo>& BoneInfos = RefSkeleton.GetRawRefBoneInfo();
+    const int32 NumBones = RefSkeleton.GetRawBoneNum();
+
+    TArray<TSharedPtr<FJsonValue>> BonesJson;
+    BonesJson.Reserve(NumBones);
+    for (int32 i = 0; i < NumBones; ++i)
+    {
+        const EBoneTranslationRetargetingMode::Type Mode = Skeleton->GetBoneTranslationRetargetingMode(i);
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("name"), BoneInfos[i].Name.ToString());
+        Entry->SetStringField(TEXT("retargeting_mode"), BoneTranslationRetargetingModeToString(Mode));
+        BonesJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+    Result->SetNumberField(TEXT("bone_count"), NumBones);
+    Result->SetArrayField(TEXT("bones"), BonesJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListIKRigs(const TSharedPtr<FJsonObject>& Params)
+{
+    FString PathFilter;
+    Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = true;
+    Filter.ClassPaths.Add(UIKRigDefinition::StaticClass()->GetClassPathName());
+    if (PathFilter.Len() > 0)
+    {
+        Filter.PackagePaths.Add(FName(*PathFilter));
+    }
+
+    TArray<FAssetData> Assets;
+    AssetRegistry.GetAssets(Filter, Assets);
+
+    TArray<TSharedPtr<FJsonValue>> AssetsJson;
+    AssetsJson.Reserve(Assets.Num());
+    for (const FAssetData& Asset : Assets)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("path"), Asset.GetObjectPathString());
+        Entry->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+        AssetsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path_filter"), PathFilter);
+    Result->SetNumberField(TEXT("total_count"), Assets.Num());
+    Result->SetArrayField(TEXT("assets"), AssetsJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetIKRigInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UIKRigDefinition* Rig = LoadObject<UIKRigDefinition>(nullptr, *AssetPath);
+    if (!Rig)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("IKRig asset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), Rig->GetPathName());
+    Result->SetStringField(TEXT("asset_class"), Rig->GetClass()->GetName());
+    Result->SetStringField(TEXT("preview_skeletal_mesh"), Rig->PreviewSkeletalMesh.ToString());
+    Result->SetStringField(TEXT("pelvis_bone"), Rig->GetPelvis().ToString());
+
+    // Chains: FBoneChain entries describe one retarget bone chain (ChainName, StartBone, EndBone, IKGoalName).
+    const TArray<FBoneChain>& Chains = Rig->GetRetargetChains();
+    TArray<TSharedPtr<FJsonValue>> ChainsJson;
+    ChainsJson.Reserve(Chains.Num());
+    for (int32 i = 0; i < Chains.Num(); ++i)
+    {
+        const FBoneChain& Chain = Chains[i];
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("chain_name"), Chain.ChainName.ToString());
+        Entry->SetStringField(TEXT("start_bone"), Chain.StartBone.BoneName.ToString());
+        Entry->SetStringField(TEXT("end_bone"), Chain.EndBone.BoneName.ToString());
+        Entry->SetStringField(TEXT("goal_name"), Chain.IKGoalName.ToString());
+        ChainsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("chain_count"), Chains.Num());
+    Result->SetArrayField(TEXT("chains"), ChainsJson);
+
+    // Goals: UIKRigEffectorGoal carries the goal name, attached bone, and editor transforms.
+    const TArray<UIKRigEffectorGoal*>& Goals = Rig->GetGoalArray();
+    TArray<TSharedPtr<FJsonValue>> GoalsJson;
+    GoalsJson.Reserve(Goals.Num());
+    for (int32 i = 0; i < Goals.Num(); ++i)
+    {
+        const UIKRigEffectorGoal* Goal = Goals[i];
+        if (!Goal)
+        {
+            continue;
+        }
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("goal_name"), Goal->GoalName.ToString());
+        Entry->SetStringField(TEXT("bone_name"), Goal->BoneName.ToString());
+        GoalsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("goal_count"), GoalsJson.Num());
+    Result->SetArrayField(TEXT("goals"), GoalsJson);
+
+    // Solvers: SolverStack is FInstancedStruct; emit the solver struct name (e.g. FIKRigFBIKSolver, FIKRigLimbSolver)
+    // without trying to introspect each solver's parameters — same trade-off as ChooserTable columns.
+    const TArray<FInstancedStruct>& Solvers = Rig->GetSolverStructs();
+    TArray<TSharedPtr<FJsonValue>> SolversJson;
+    SolversJson.Reserve(Solvers.Num());
+    for (int32 i = 0; i < Solvers.Num(); ++i)
+    {
+        const UScriptStruct* SStruct = Solvers[i].GetScriptStruct();
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("struct_name"), SStruct ? SStruct->GetName() : FString());
+        SolversJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("solver_count"), Solvers.Num());
+    Result->SetArrayField(TEXT("solvers"), SolversJson);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListIKRetargeters(const TSharedPtr<FJsonObject>& Params)
+{
+    FString PathFilter;
+    Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = true;
+    Filter.ClassPaths.Add(UIKRetargeter::StaticClass()->GetClassPathName());
+    if (PathFilter.Len() > 0)
+    {
+        Filter.PackagePaths.Add(FName(*PathFilter));
+    }
+
+    TArray<FAssetData> Assets;
+    AssetRegistry.GetAssets(Filter, Assets);
+
+    TArray<TSharedPtr<FJsonValue>> AssetsJson;
+    AssetsJson.Reserve(Assets.Num());
+    for (const FAssetData& Asset : Assets)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("path"), Asset.GetObjectPathString());
+        Entry->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+        AssetsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path_filter"), PathFilter);
+    Result->SetNumberField(TEXT("total_count"), Assets.Num());
+    Result->SetArrayField(TEXT("assets"), AssetsJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetIKRetargeterInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UIKRetargeter* Retargeter = LoadObject<UIKRetargeter>(nullptr, *AssetPath);
+    if (!Retargeter)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("IKRetargeter asset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), Retargeter->GetPathName());
+    Result->SetStringField(TEXT("asset_class"), Retargeter->GetClass()->GetName());
+
+    // Source / target IK Rig assets — public getter walks both pointers so we don't
+    // need to touch the private SourceIKRigAsset / TargetIKRigAsset fields directly.
+    const UIKRigDefinition* SourceRig = Retargeter->GetIKRig(ERetargetSourceOrTarget::Source);
+    const UIKRigDefinition* TargetRig = Retargeter->GetIKRig(ERetargetSourceOrTarget::Target);
+    Result->SetStringField(TEXT("source_ik_rig_path"), SourceRig ? SourceRig->GetPathName() : FString());
+    Result->SetStringField(TEXT("target_ik_rig_path"), TargetRig ? TargetRig->GetPathName() : FString());
+    Result->SetBoolField(TEXT("has_source_ik_rig"), Retargeter->HasSourceIKRig());
+    Result->SetBoolField(TEXT("has_target_ik_rig"), Retargeter->HasTargetIKRig());
+
+    // Current retarget pose names (public API, no reflection needed).
+    Result->SetStringField(TEXT("current_source_pose"), Retargeter->GetCurrentRetargetPoseName(ERetargetSourceOrTarget::Source).ToString());
+    Result->SetStringField(TEXT("current_target_pose"), Retargeter->GetCurrentRetargetPoseName(ERetargetSourceOrTarget::Target).ToString());
+
+    // Source / target retarget pose lists. The TMaps are private with only a
+    // UIKRetargeterController friend, so we read keys via reflection then look up
+    // each pose with the public GetRetargetPoseByName getter to grab bone offset counts.
+    auto EmitPoseList = [Retargeter](FName MapPropName, ERetargetSourceOrTarget Side) -> TArray<TSharedPtr<FJsonValue>>
+    {
+        TArray<TSharedPtr<FJsonValue>> Out;
+        const TArray<FName> PoseNames = ReadNameKeysFromMapProperty(Retargeter, MapPropName);
+        Out.Reserve(PoseNames.Num());
+        for (const FName& PoseName : PoseNames)
+        {
+            const FIKRetargetPose* Pose = Retargeter->GetRetargetPoseByName(Side, PoseName);
+            const int32 OffsetCount = Pose ? Pose->GetAllDeltaRotations().Num() : 0;
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("name"), PoseName.ToString());
+            Entry->SetNumberField(TEXT("bone_offset_count"), OffsetCount);
+            Out.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+        return Out;
+    };
+
+    const TArray<TSharedPtr<FJsonValue>> SourcePosesJson = EmitPoseList(TEXT("SourceRetargetPoses"), ERetargetSourceOrTarget::Source);
+    const TArray<TSharedPtr<FJsonValue>> TargetPosesJson = EmitPoseList(TEXT("TargetRetargetPoses"), ERetargetSourceOrTarget::Target);
+    Result->SetNumberField(TEXT("source_pose_count"), SourcePosesJson.Num());
+    Result->SetArrayField(TEXT("source_retarget_poses"), SourcePosesJson);
+    Result->SetNumberField(TEXT("target_pose_count"), TargetPosesJson.Num());
+    Result->SetArrayField(TEXT("target_retarget_poses"), TargetPosesJson);
+
+    // Retarget op stack — UE5.7 stores chain mapping inside FInstancedStruct ops
+    // (FK Chains Op / IK Chains Op / Pelvis Motion Op / etc), so we surface the op
+    // struct names but do not introspect their internal chain mapping yet.
+    const TArray<FInstancedStruct>& Ops = Retargeter->GetRetargetOps();
+    TArray<TSharedPtr<FJsonValue>> OpsJson;
+    OpsJson.Reserve(Ops.Num());
+    for (int32 i = 0; i < Ops.Num(); ++i)
+    {
+        const UScriptStruct* OStruct = Ops[i].GetScriptStruct();
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("struct_name"), OStruct ? OStruct->GetName() : FString());
+        OpsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("retarget_op_count"), Ops.Num());
+    Result->SetArrayField(TEXT("retarget_ops"), OpsJson);
+
+    // Profile names (also a private TMap<FName, FRetargetProfile>, read via reflection).
+    const TArray<FName> ProfileNames = ReadNameKeysFromMapProperty(Retargeter, TEXT("Profiles"));
+    TArray<TSharedPtr<FJsonValue>> ProfilesJson;
+    ProfilesJson.Reserve(ProfileNames.Num());
+    for (const FName& Name : ProfileNames)
+    {
+        ProfilesJson.Add(MakeShared<FJsonValueString>(Name.ToString()));
+    }
+    Result->SetNumberField(TEXT("profile_count"), ProfileNames.Num());
+    Result->SetArrayField(TEXT("profiles"), ProfilesJson);
+
     return Result;
 }

@@ -290,7 +290,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("find_animations_for_skeleton") ||
                      CommandType == TEXT("get_skeleton_bone_hierarchy") ||
                      CommandType == TEXT("list_chooser_tables") ||
-                     CommandType == TEXT("get_chooser_table_info"))
+                     CommandType == TEXT("get_chooser_table_info") ||
+                     CommandType == TEXT("get_skeleton_retarget_modes") ||
+                     CommandType == TEXT("list_ik_rigs") ||
+                     CommandType == TEXT("get_ik_rig_info") ||
+                     CommandType == TEXT("list_ik_retargeters") ||
+                     CommandType == TEXT("get_ik_retargeter_info"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

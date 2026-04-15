@@ -341,4 +341,213 @@ def register_animation_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def get_skeleton_retarget_modes(ctx: Context, skeleton_path: str) -> Dict[str, Any]:
+        """Get the per-bone TranslationRetargetingMode for a USkeleton.
+
+        For each bone in the raw reference skeleton this returns its index, name and
+        retargeting mode string (one of: Animation, Skeleton, AnimationScaled,
+        AnimationRelative, OrientAndScale).
+
+        Args:
+            skeleton_path: Full skeleton object path, e.g.
+                "/Game/Characters/UEFN_Mannequin/Meshes/SK_UEFN_Mannequin.SK_UEFN_Mannequin"
+
+        Returns:
+            Dict with skeleton_path, bone_count, bones list.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_skeleton_retarget_modes",
+                {"skeleton_path": skeleton_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting skeleton retarget modes: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def list_ik_rigs(ctx: Context, path_filter: str = "") -> Dict[str, Any]:
+        """List all UIKRigDefinition assets in the project via the Asset Registry.
+
+        Scans the whole project by default; pass `path_filter` to narrow the search
+        to a specific content path.
+
+        Args:
+            path_filter: Optional content root to restrict the search.
+
+        Returns:
+            Dict with path_filter, total_count, and an `assets` list where each entry
+            has `path` and `class`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "list_ik_rigs",
+                {"path_filter": path_filter},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error listing IK rigs: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_ik_rig_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read the static structure of a UIKRigDefinition asset (read-only).
+
+        Returns the preview skeletal mesh path, pelvis bone, retarget bone chains
+        (chain_name / start_bone / end_bone / goal_name), goals (goal_name /
+        bone_name) and the solver stack. Each solver entry only carries its
+        UScriptStruct name (e.g. `IKRigFBIKSolver`); per-solver parameters are NOT
+        introspected in this tool.
+
+        Args:
+            asset_path: Full IKRig object path, e.g.
+                "/Game/.../IK_Mannequin.IK_Mannequin"
+
+        Returns:
+            Dict with asset_path, asset_class, preview_skeletal_mesh, pelvis_bone,
+            chain_count, chains, goal_count, goals, solver_count, solvers.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_ik_rig_info",
+                {"asset_path": asset_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting IK rig info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def list_ik_retargeters(ctx: Context, path_filter: str = "") -> Dict[str, Any]:
+        """List all UIKRetargeter assets in the project via the Asset Registry.
+
+        Args:
+            path_filter: Optional content root to restrict the search.
+
+        Returns:
+            Dict with path_filter, total_count, and an `assets` list where each entry
+            has `path` and `class`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "list_ik_retargeters",
+                {"path_filter": path_filter},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error listing IK retargeters: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_ik_retargeter_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read the static structure of a UIKRetargeter asset (read-only).
+
+        Returns:
+        - source/target IKRig asset paths and presence flags
+        - current source/target retarget pose names
+        - source_retarget_poses / target_retarget_poses lists, each entry has
+          `name` and `bone_offset_count` (size of FIKRetargetPose.BoneRotationOffsets)
+        - retarget_ops list — each entry exposes the op's UScriptStruct name only
+          (e.g. `IKRetargetFKChainsOp`, `IKRetargetIKChainsOp`, `IKRetargetPelvisMotionOp`).
+          Chain mappings live INSIDE each op in UE5.7 and are NOT introspected here.
+        - profiles list — names of the FRetargetProfile entries on the asset
+
+        Args:
+            asset_path: Full IKRetargeter object path, e.g.
+                "/Game/.../RTG_Mannequin.RTG_Mannequin"
+
+        Returns:
+            Dict with the fields described above.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_ik_retargeter_info",
+                {"asset_path": asset_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting IK retargeter info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Animation tools registered successfully")

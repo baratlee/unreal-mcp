@@ -23,4 +23,9 @@ private:
     TSharedPtr<FJsonObject> HandleGetSkeletonBoneHierarchy(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleListChooserTables(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetSkeletonRetargetModes(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleListIKRigs(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetIKRigInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleListIKRetargeters(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetIKRetargeterInfo(const TSharedPtr<FJsonObject>& Params);
 };
