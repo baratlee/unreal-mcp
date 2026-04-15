@@ -16,13 +16,23 @@ def register_animation_tools(mcp: FastMCP):
 
     @mcp.tool()
     def get_animation_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
-        """Get basic info (play length, num frames, skeleton) for an AnimSequence or AnimMontage.
+        """Get basic info for an AnimSequence or AnimMontage, including root motion.
 
         Args:
             asset_path: Full asset path, e.g. "/Game/Animations/Montage_Attack.Montage_Attack"
 
         Returns:
-            Dict with asset_path, asset_class, play_length, num_frames, skeleton.
+            Dict with:
+              asset_path, asset_class, play_length, num_frames, skeleton,
+              has_root_motion       — effective flag. For AnimSequence equals
+                                      bEnableRootMotion; for AnimMontage this is the
+                                      OR aggregation across every AnimSequence
+                                      referenced by SlotAnimTracks (any one with
+                                      Root Motion enabled makes the whole montage
+                                      true — see UAnimMontage::HasRootMotion).
+            AnimSequence-only fields (omitted for AnimMontage):
+              b_enable_root_motion, root_motion_root_lock (RefPose / AnimFirstFrame
+              / Zero), b_force_root_lock, b_use_normalized_root_motion_scale.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -168,6 +178,8 @@ def register_animation_tools(mcp: FastMCP):
             Dict with:
               asset_path, asset_class, skeleton, play_length, is_loop,
               blend_in_time, blend_out_time, blend_out_trigger_time, enable_auto_blend_out,
+              has_root_motion — OR aggregation across every underlying AnimSequence.
+                                True if ANY segment has bEnableRootMotion set.
               section_count, sections[]:
                   section_index, section_name, start_time, segment_length,
                   next_section_name, link_value
@@ -176,7 +188,11 @@ def register_animation_tools(mcp: FastMCP):
                   segments[]:
                       segment_index, anim_path, anim_class,
                       start_pos, end_pos, length,
-                      anim_start_time, anim_end_time, play_rate, loop_count
+                      anim_start_time, anim_end_time, play_rate, loop_count,
+                      has_root_motion, b_enable_root_motion, root_motion_root_lock,
+                      b_force_root_lock, b_use_normalized_root_motion_scale
+                      (root motion fields only present when the segment is a
+                       UAnimSequence — they are omitted otherwise)
               notify_track_count, notify_tracks[]: track_index, track_name
         """
         from unreal_mcp_server import get_unreal_connection

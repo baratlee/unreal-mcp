@@ -25,6 +25,28 @@
 #include "Retargeter/IKRetargetProfile.h"
 #include "UObject/UnrealType.h"
 
+namespace
+{
+    FString RootMotionRootLockToString(ERootMotionRootLock::Type Lock)
+    {
+        switch (Lock)
+        {
+        case ERootMotionRootLock::RefPose:        return TEXT("RefPose");
+        case ERootMotionRootLock::AnimFirstFrame: return TEXT("AnimFirstFrame");
+        case ERootMotionRootLock::Zero:           return TEXT("Zero");
+        default:                                   return TEXT("Unknown");
+        }
+    }
+
+    void AddRootMotionFieldsForSequence(const TSharedPtr<FJsonObject>& Out, const UAnimSequence* AnimSeq)
+    {
+        Out->SetBoolField(TEXT("b_enable_root_motion"), AnimSeq->bEnableRootMotion);
+        Out->SetStringField(TEXT("root_motion_root_lock"), RootMotionRootLockToString(AnimSeq->RootMotionRootLock.GetValue()));
+        Out->SetBoolField(TEXT("b_force_root_lock"), AnimSeq->bForceRootLock);
+        Out->SetBoolField(TEXT("b_use_normalized_root_motion_scale"), AnimSeq->bUseNormalizedRootMotionScale);
+    }
+}
+
 FUnrealMCPAnimationCommands::FUnrealMCPAnimationCommands()
 {
 }
@@ -121,6 +143,15 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationInfo(cons
     else
     {
         Result->SetStringField(TEXT("skeleton"), FString());
+    }
+
+    // Root motion. has_root_motion is the effective virtual call: for AnimSequence
+    // it returns bEnableRootMotion; for AnimMontage it OR-aggregates all underlying
+    // AnimSequences referenced by SlotAnimTracks.
+    Result->SetBoolField(TEXT("has_root_motion"), AnimBase->HasRootMotion());
+    if (const UAnimSequence* AnimSeq = Cast<UAnimSequence>(AnimBase))
+    {
+        AddRootMotionFieldsForSequence(Result, AnimSeq);
     }
 
     return Result;
@@ -1001,6 +1032,11 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetMontageCompositeIn
     Result->SetNumberField(TEXT("blend_out_trigger_time"), Montage->BlendOutTriggerTime);
     Result->SetBoolField(TEXT("enable_auto_blend_out"), Montage->bEnableAutoBlendOut);
 
+    // OR-aggregated across all underlying AnimSequences in SlotAnimTracks.
+    // True if ANY segment's AnimSequence has bEnableRootMotion set — see
+    // UAnimMontage::HasRootMotion in Engine/Source/Runtime/Engine/Private/Animation/AnimMontage.cpp.
+    Result->SetBoolField(TEXT("has_root_motion"), Montage->HasRootMotion());
+
     if (const USkeleton* Skeleton = Montage->GetSkeleton())
     {
         Result->SetStringField(TEXT("skeleton"), Skeleton->GetPathName());
@@ -1051,6 +1087,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetMontageCompositeIn
             SegEntry->SetNumberField(TEXT("anim_end_time"), Segment.AnimEndTime);
             SegEntry->SetNumberField(TEXT("play_rate"), Segment.AnimPlayRate);
             SegEntry->SetNumberField(TEXT("loop_count"), Segment.LoopingCount);
+
+            // Per-segment root motion. Only AnimSequence carries the active flag —
+            // the same fields on AnimMontage are deprecated since 4.5.
+            if (const UAnimSequence* SegSeq = Cast<UAnimSequence>(SegAnim))
+            {
+                SegEntry->SetBoolField(TEXT("has_root_motion"), SegSeq->HasRootMotion());
+                AddRootMotionFieldsForSequence(SegEntry, SegSeq);
+            }
 
             SegmentsJson.Add(MakeShared<FJsonValueObject>(SegEntry));
         }
