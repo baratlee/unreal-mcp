@@ -169,24 +169,39 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByPath(const FString& BlueprintP
         return nullptr;
     }
 
-    if (BlueprintPath.StartsWith(TEXT("/")))
+    auto TryLoadByObjectPath = [](const FString& Path) -> UBlueprint*
     {
-        if (UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintPath))
+        if (UBlueprint* Direct = LoadObject<UBlueprint>(nullptr, *Path))
         {
-            return Blueprint;
+            return Direct;
         }
-
-        const FString AssetName = FPaths::GetBaseFilename(BlueprintPath);
+        const FString AssetName = FPaths::GetBaseFilename(Path);
         if (AssetName.IsEmpty())
         {
             return nullptr;
         }
-        const FString FullPath = BlueprintPath + TEXT(".") + AssetName;
-        return LoadObject<UBlueprint>(nullptr, *FullPath);
+        const FString FullObjectPath = Path + TEXT(".") + AssetName;
+        return LoadObject<UBlueprint>(nullptr, *FullObjectPath);
+    };
+
+    if (BlueprintPath.StartsWith(TEXT("/")))
+    {
+        return TryLoadByObjectPath(BlueprintPath);
     }
 
-    // 不带 '/' 前缀的裸名字走老的 /Game/Blueprints/ 快捷回退
-    return FindBlueprintByName(BlueprintPath);
+    // 不带 '/' 前缀的裸名字 → 走老的 /Game/Blueprints/ 快捷回退（非递归）。
+    // 注意：之前这里写成 return FindBlueprintByName(BlueprintPath)，会和 FindBlueprintByName
+    // 形成无限互递归（FindBlueprintByName 又调回 FindBlueprintByPath）→ stack overflow，
+    // 当用户传入裸名 (例如 "SandboxCharacter_Mover") 时直接把 Editor 崩掉。
+    const FString GameBlueprintsPath = FString(TEXT("/Game/Blueprints/")) + BlueprintPath;
+    if (UBlueprint* Found = TryLoadByObjectPath(GameBlueprintsPath))
+    {
+        return Found;
+    }
+
+    // 二级回退：/Game/<name>，覆盖资产不在 Blueprints 子目录的情况。
+    const FString GameRootPath = FString(TEXT("/Game/")) + BlueprintPath;
+    return TryLoadByObjectPath(GameRootPath);
 }
 
 UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)
