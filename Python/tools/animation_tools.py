@@ -614,4 +614,124 @@ def register_animation_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    # ------------------------------------------------------------------
+    # State Machine tools
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def get_anim_state_machine(ctx: Context, blueprint_path: str, state_machine_name: str = "") -> Dict[str, Any]:
+        """Get the structure of an Animation State Machine inside an AnimBP.
+
+        Returns all states (name, type, is_conduit) and all transitions
+        (source, target, priority, crossfade_duration, blend_mode, logic_type,
+        bidirectional, automatic_rule, disabled).
+
+        Args:
+            blueprint_path: Asset path of the Animation Blueprint
+            state_machine_name: Name of the State Machine node (optional — omit to auto-pick the first one)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"blueprint_path": blueprint_path}
+            if state_machine_name:
+                params["state_machine_name"] = state_machine_name
+
+            response = unreal.send_command("get_anim_state_machine", params)
+
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting anim state machine: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    async def get_anim_state_graph(ctx: Context, blueprint_path: str, state_name: str, state_machine_name: str = "", pin_payload_mode: str = "full") -> Dict[str, Any]:
+        """Get the internal animation node graph of a single state inside a State Machine.
+
+        Returns the same node/pin format as get_blueprint_function_graph.
+
+        Args:
+            blueprint_path: Asset path of the Animation Blueprint
+            state_name: Name of the state to read
+            state_machine_name: Name of the State Machine node (optional)
+            pin_payload_mode: "full" (default), "summary", or "names_only"
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_path": blueprint_path,
+                "state_name": state_name,
+            }
+            if state_machine_name:
+                params["state_machine_name"] = state_machine_name
+            if pin_payload_mode != "full":
+                params["pin_payload_mode"] = pin_payload_mode
+
+            response = unreal.send_command("get_anim_state_graph", params)
+
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting anim state graph: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    async def get_anim_transition_graph(ctx: Context, blueprint_path: str, source_state: str, target_state: str, state_machine_name: str = "", pin_payload_mode: str = "full") -> Dict[str, Any]:
+        """Get the condition graph and metadata of a transition between two states.
+
+        Returns transition metadata (priority, crossfade_duration, blend_mode,
+        logic_type, etc.) plus the condition graph nodes in the same format as
+        get_blueprint_function_graph.
+
+        Args:
+            blueprint_path: Asset path of the Animation Blueprint
+            source_state: Name of the source state
+            target_state: Name of the target state
+            state_machine_name: Name of the State Machine node (optional)
+            pin_payload_mode: "full" (default), "summary", or "names_only"
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_path": blueprint_path,
+                "source_state": source_state,
+                "target_state": target_state,
+            }
+            if state_machine_name:
+                params["state_machine_name"] = state_machine_name
+            if pin_payload_mode != "full":
+                params["pin_payload_mode"] = pin_payload_mode
+
+            response = unreal.send_command("get_anim_transition_graph", params)
+
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting anim transition graph: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Animation tools registered successfully")

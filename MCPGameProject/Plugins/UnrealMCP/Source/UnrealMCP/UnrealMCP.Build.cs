@@ -67,7 +67,8 @@ public class UnrealMCP : ModuleRules
 					"UMGEditor",          // For WidgetBlueprint.h and other UMG editor functionality
 					"AnimationBlueprintLibrary", // For animation data read helpers
 					"Chooser",             // For UChooserTable read-only inspection
-					"IKRig"                // For UIKRigDefinition / UIKRetargeter read-only inspection
+					"IKRig",               // For UIKRigDefinition / UIKRetargeter read-only inspection
+					"AnimGraph"            // For State Machine editor classes (UAnimStateNode, UAnimStateTransitionNode, etc.)
 				}
 			);
 		}
