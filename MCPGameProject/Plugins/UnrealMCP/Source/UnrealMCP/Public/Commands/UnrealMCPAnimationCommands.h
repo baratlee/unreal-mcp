@@ -29,4 +29,8 @@ private:
     TSharedPtr<FJsonObject> HandleGetIKRigInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleListIKRetargeters(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetIKRetargeterInfo(const TSharedPtr<FJsonObject>& Params);
+
+    // Enhanced Input asset readers
+    TSharedPtr<FJsonObject> HandleGetInputActionInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetInputMappingContextInfo(const TSharedPtr<FJsonObject>& Params);
 };

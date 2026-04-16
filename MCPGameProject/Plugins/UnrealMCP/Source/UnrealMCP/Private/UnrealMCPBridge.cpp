@@ -300,7 +300,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("list_ik_rigs") ||
                      CommandType == TEXT("get_ik_rig_info") ||
                      CommandType == TEXT("list_ik_retargeters") ||
-                     CommandType == TEXT("get_ik_retargeter_info"))
+                     CommandType == TEXT("get_ik_retargeter_info") ||
+                     CommandType == TEXT("get_input_action_info") ||
+                     CommandType == TEXT("get_input_mapping_context_info"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

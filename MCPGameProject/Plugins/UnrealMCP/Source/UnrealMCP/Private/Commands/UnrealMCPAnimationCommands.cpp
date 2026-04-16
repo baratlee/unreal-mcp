@@ -24,6 +24,11 @@
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetProfile.h"
 #include "UObject/UnrealType.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
+#include "EnhancedActionKeyMapping.h"
+#include "InputTriggers.h"
+#include "InputModifiers.h"
 
 namespace
 {
@@ -108,6 +113,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_ik_retargeter_info"))
     {
         return HandleGetIKRetargeterInfo(Params);
+    }
+    if (CommandType == TEXT("get_input_action_info"))
+    {
+        return HandleGetInputActionInfo(Params);
+    }
+    if (CommandType == TEXT("get_input_mapping_context_info"))
+    {
+        return HandleGetInputMappingContextInfo(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -1123,6 +1136,234 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetMontageCompositeIn
 #endif
     Result->SetNumberField(TEXT("notify_track_count"), NotifyTracksJson.Num());
     Result->SetArrayField(TEXT("notify_tracks"), NotifyTracksJson);
+
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enhanced Input helpers
+// ─────────────────────────────────────────────────────────────
+namespace
+{
+    FString InputActionValueTypeToString(EInputActionValueType V)
+    {
+        switch (V)
+        {
+        case EInputActionValueType::Boolean: return TEXT("Boolean");
+        case EInputActionValueType::Axis1D:  return TEXT("Axis1D");
+        case EInputActionValueType::Axis2D:  return TEXT("Axis2D");
+        case EInputActionValueType::Axis3D:  return TEXT("Axis3D");
+        default:                              return TEXT("Unknown");
+        }
+    }
+
+    TSharedPtr<FJsonObject> SerializeTrigger(const UInputTrigger* Trigger)
+    {
+        TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+        if (!Trigger) return Obj;
+
+        Obj->SetStringField(TEXT("class"), Trigger->GetClass()->GetName());
+        Obj->SetNumberField(TEXT("actuation_threshold"), Trigger->ActuationThreshold);
+
+        // Timed triggers
+        if (const UInputTriggerHold* Hold = Cast<UInputTriggerHold>(Trigger))
+        {
+            Obj->SetNumberField(TEXT("hold_time_threshold"), Hold->HoldTimeThreshold);
+            Obj->SetBoolField(TEXT("is_one_shot"), Hold->bIsOneShot);
+        }
+        else if (const UInputTriggerHoldAndRelease* HAR = Cast<UInputTriggerHoldAndRelease>(Trigger))
+        {
+            Obj->SetNumberField(TEXT("hold_time_threshold"), HAR->HoldTimeThreshold);
+        }
+        else if (const UInputTriggerTap* Tap = Cast<UInputTriggerTap>(Trigger))
+        {
+            Obj->SetNumberField(TEXT("tap_release_time_threshold"), Tap->TapReleaseTimeThreshold);
+        }
+        else if (const UInputTriggerPulse* Pulse = Cast<UInputTriggerPulse>(Trigger))
+        {
+            Obj->SetBoolField(TEXT("trigger_on_start"), Pulse->bTriggerOnStart);
+            Obj->SetNumberField(TEXT("interval"), Pulse->Interval);
+            Obj->SetNumberField(TEXT("trigger_limit"), Pulse->TriggerLimit);
+        }
+        else if (const UInputTriggerChordAction* Chord = Cast<UInputTriggerChordAction>(Trigger))
+        {
+            if (Chord->ChordAction)
+            {
+                Obj->SetStringField(TEXT("chord_action"), Chord->ChordAction->GetPathName());
+            }
+        }
+
+        return Obj;
+    }
+
+    TSharedPtr<FJsonObject> SerializeModifier(const UInputModifier* Modifier)
+    {
+        TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+        if (!Modifier) return Obj;
+
+        Obj->SetStringField(TEXT("class"), Modifier->GetClass()->GetName());
+
+        if (const UInputModifierDeadZone* DZ = Cast<UInputModifierDeadZone>(Modifier))
+        {
+            Obj->SetNumberField(TEXT("lower_threshold"), DZ->LowerThreshold);
+            Obj->SetNumberField(TEXT("upper_threshold"), DZ->UpperThreshold);
+            Obj->SetStringField(TEXT("type"), DZ->Type == EDeadZoneType::Axial ? TEXT("Axial") :
+                                              DZ->Type == EDeadZoneType::Radial ? TEXT("Radial") : TEXT("UnscaledRadial"));
+        }
+        else if (const UInputModifierScalar* Scalar = Cast<UInputModifierScalar>(Modifier))
+        {
+            Obj->SetStringField(TEXT("scalar"), FString::Printf(TEXT("(%g, %g, %g)"), Scalar->Scalar.X, Scalar->Scalar.Y, Scalar->Scalar.Z));
+        }
+        else if (const UInputModifierNegate* Neg = Cast<UInputModifierNegate>(Modifier))
+        {
+            Obj->SetBoolField(TEXT("x"), Neg->bX);
+            Obj->SetBoolField(TEXT("y"), Neg->bY);
+            Obj->SetBoolField(TEXT("z"), Neg->bZ);
+        }
+        else if (const UInputModifierSwizzleAxis* Swizzle = Cast<UInputModifierSwizzleAxis>(Modifier))
+        {
+            switch (Swizzle->Order)
+            {
+            case EInputAxisSwizzle::YXZ: Obj->SetStringField(TEXT("order"), TEXT("YXZ")); break;
+            case EInputAxisSwizzle::ZYX: Obj->SetStringField(TEXT("order"), TEXT("ZYX")); break;
+            case EInputAxisSwizzle::XZY: Obj->SetStringField(TEXT("order"), TEXT("XZY")); break;
+            case EInputAxisSwizzle::YZX: Obj->SetStringField(TEXT("order"), TEXT("YZX")); break;
+            case EInputAxisSwizzle::ZXY: Obj->SetStringField(TEXT("order"), TEXT("ZXY")); break;
+            default: Obj->SetStringField(TEXT("order"), TEXT("Unknown")); break;
+            }
+        }
+        else if (const UInputModifierResponseCurveExponential* Exp = Cast<UInputModifierResponseCurveExponential>(Modifier))
+        {
+            Obj->SetStringField(TEXT("curve_exponent"), FString::Printf(TEXT("(%g, %g, %g)"), Exp->CurveExponent.X, Exp->CurveExponent.Y, Exp->CurveExponent.Z));
+        }
+        else if (const UInputModifierFOVScaling* FOV = Cast<UInputModifierFOVScaling>(Modifier))
+        {
+            Obj->SetNumberField(TEXT("fov_scale"), FOV->FOVScale);
+        }
+
+        return Obj;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> SerializeTriggerArray(const TArray<TObjectPtr<UInputTrigger>>& Triggers)
+    {
+        TArray<TSharedPtr<FJsonValue>> Arr;
+        for (const auto& T : Triggers)
+        {
+            if (T) Arr.Add(MakeShared<FJsonValueObject>(SerializeTrigger(T)));
+        }
+        return Arr;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> SerializeModifierArray(const TArray<TObjectPtr<UInputModifier>>& Modifiers)
+    {
+        TArray<TSharedPtr<FJsonValue>> Arr;
+        for (const auto& M : Modifiers)
+        {
+            if (M) Arr.Add(MakeShared<FJsonValueObject>(SerializeModifier(M)));
+        }
+        return Arr;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// get_input_action_info
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetInputActionInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UInputAction* IA = LoadObject<UInputAction>(nullptr, *AssetPath);
+    if (!IA)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputAction not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), IA->GetPathName());
+    Result->SetStringField(TEXT("value_type"), InputActionValueTypeToString(IA->ValueType));
+    Result->SetStringField(TEXT("description"), IA->ActionDescription.ToString());
+    Result->SetBoolField(TEXT("consume_input"), IA->bConsumeInput);
+    Result->SetBoolField(TEXT("trigger_when_paused"), IA->bTriggerWhenPaused);
+    Result->SetBoolField(TEXT("reserve_all_mappings"), IA->bReserveAllMappings);
+
+    // Triggers
+    TArray<TSharedPtr<FJsonValue>> TriggersJson = SerializeTriggerArray(IA->Triggers);
+    Result->SetNumberField(TEXT("trigger_count"), TriggersJson.Num());
+    Result->SetArrayField(TEXT("triggers"), TriggersJson);
+
+    // Modifiers
+    TArray<TSharedPtr<FJsonValue>> ModifiersJson = SerializeModifierArray(IA->Modifiers);
+    Result->SetNumberField(TEXT("modifier_count"), ModifiersJson.Num());
+    Result->SetArrayField(TEXT("modifiers"), ModifiersJson);
+
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// get_input_mapping_context_info
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetInputMappingContextInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *AssetPath);
+    if (!IMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputMappingContext not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
+    Result->SetStringField(TEXT("description"), IMC->ContextDescription.ToString());
+
+    // Get mappings via public API
+    const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+
+    TArray<TSharedPtr<FJsonValue>> MappingsJson;
+    for (const FEnhancedActionKeyMapping& Mapping : Mappings)
+    {
+        TSharedPtr<FJsonObject> MappingObj = MakeShared<FJsonObject>();
+
+        // Action
+        if (Mapping.Action)
+        {
+            MappingObj->SetStringField(TEXT("action"), Mapping.Action->GetPathName());
+            MappingObj->SetStringField(TEXT("action_name"), Mapping.Action->GetName());
+            MappingObj->SetStringField(TEXT("value_type"), InputActionValueTypeToString(Mapping.Action->ValueType));
+        }
+        else
+        {
+            MappingObj->SetStringField(TEXT("action"), TEXT("None"));
+        }
+
+        // Key
+        MappingObj->SetStringField(TEXT("key"), Mapping.Key.GetFName().ToString());
+
+        // Triggers
+        TArray<TSharedPtr<FJsonValue>> TriggersJson = SerializeTriggerArray(Mapping.Triggers);
+        MappingObj->SetNumberField(TEXT("trigger_count"), TriggersJson.Num());
+        MappingObj->SetArrayField(TEXT("triggers"), TriggersJson);
+
+        // Modifiers
+        TArray<TSharedPtr<FJsonValue>> ModifiersJson = SerializeModifierArray(Mapping.Modifiers);
+        MappingObj->SetNumberField(TEXT("modifier_count"), ModifiersJson.Num());
+        MappingObj->SetArrayField(TEXT("modifiers"), ModifiersJson);
+
+        MappingsJson.Add(MakeShared<FJsonValueObject>(MappingObj));
+    }
+
+    Result->SetNumberField(TEXT("mapping_count"), MappingsJson.Num());
+    Result->SetArrayField(TEXT("mappings"), MappingsJson);
 
     return Result;
 }
