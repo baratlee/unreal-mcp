@@ -20,6 +20,9 @@
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/StaticMesh.h"
+#include "StaticMeshResources.h"
+#include "PhysicsEngine/BodySetup.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -74,7 +77,12 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleTakeScreenshot(Params);
     }
-    
+    // Asset inspection commands
+    else if (CommandType == TEXT("get_static_mesh_info"))
+    {
+        return HandleGetStaticMeshInfo(Params);
+    }
+
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
@@ -597,4 +605,206 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Static Mesh Info
+// ─────────────────────────────────────────────────────────────────────
+
+namespace
+{
+    FString CollisionTraceFlagToString(ECollisionTraceFlag Flag)
+    {
+        switch (Flag)
+        {
+        case CTF_UseDefault:           return TEXT("UseDefault");
+        case CTF_UseSimpleAndComplex:  return TEXT("SimpleAndComplex");
+        case CTF_UseSimpleAsComplex:   return TEXT("SimpleAsComplex");
+        case CTF_UseComplexAsSimple:   return TEXT("ComplexAsSimple");
+        default:                       return TEXT("Unknown");
+        }
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetStaticMeshInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    // ── params ──────────────────────────────────────────────────────
+    FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+    if (AssetPath.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("asset_path is required"));
+    }
+
+    const bool bIncludeVertices = Params->HasField(TEXT("include_vertices"))
+        ? Params->GetBoolField(TEXT("include_vertices"))
+        : false;
+
+    const int32 LodIndex = Params->HasField(TEXT("lod_index"))
+        ? static_cast<int32>(Params->GetNumberField(TEXT("lod_index")))
+        : 0;
+
+    const int32 MaxVertices = Params->HasField(TEXT("max_vertices"))
+        ? static_cast<int32>(Params->GetNumberField(TEXT("max_vertices")))
+        : 5000;
+
+    // ── load asset ──────────────────────────────────────────────────
+    UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *AssetPath);
+    if (!Mesh)
+    {
+        // Try appending the asset name (short-path convention)
+        const FString LeafName = FPackageName::GetShortName(AssetPath);
+        const FString FullPath = AssetPath + TEXT(".") + LeafName;
+        Mesh = LoadObject<UStaticMesh>(nullptr, *FullPath);
+    }
+    if (!Mesh)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("StaticMesh asset not found"));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), Mesh->GetPathName());
+
+    // ── render data guard ───────────────────────────────────────────
+    const FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
+    if (!RenderData || RenderData->LODResources.Num() == 0)
+    {
+        Result->SetStringField(TEXT("warning"), TEXT("No render data available (mesh may not be built)"));
+        Result->SetNumberField(TEXT("lod_count"), 0);
+        return Result;
+    }
+
+    const int32 NumLODs = RenderData->LODResources.Num();
+    Result->SetNumberField(TEXT("lod_count"), NumLODs);
+
+    // ── bounding box ────────────────────────────────────────────────
+    const FBox BBox = Mesh->GetBoundingBox();
+    {
+        TSharedPtr<FJsonObject> BBoxObj = MakeShared<FJsonObject>();
+        TArray<TSharedPtr<FJsonValue>> MinArr, MaxArr;
+        MinArr.Add(MakeShared<FJsonValueNumber>(BBox.Min.X));
+        MinArr.Add(MakeShared<FJsonValueNumber>(BBox.Min.Y));
+        MinArr.Add(MakeShared<FJsonValueNumber>(BBox.Min.Z));
+        MaxArr.Add(MakeShared<FJsonValueNumber>(BBox.Max.X));
+        MaxArr.Add(MakeShared<FJsonValueNumber>(BBox.Max.Y));
+        MaxArr.Add(MakeShared<FJsonValueNumber>(BBox.Max.Z));
+        BBoxObj->SetArrayField(TEXT("min"), MinArr);
+        BBoxObj->SetArrayField(TEXT("max"), MaxArr);
+        Result->SetObjectField(TEXT("bounding_box"), BBoxObj);
+    }
+
+    // ── nanite ──────────────────────────────────────────────────────
+    Result->SetBoolField(TEXT("nanite_enabled"), Mesh->HasValidNaniteData());
+
+    // ── lightmap ────────────────────────────────────────────────────
+    Result->SetNumberField(TEXT("lightmap_resolution"), Mesh->GetLightMapResolution());
+
+    // ── LOD 0 summary (convenience) ─────────────────────────────────
+    {
+        const FStaticMeshLODResources& LOD0 = RenderData->LODResources[0];
+        Result->SetNumberField(TEXT("vertex_count"), LOD0.GetNumVertices());
+        Result->SetNumberField(TEXT("triangle_count"), static_cast<int64>(LOD0.GetNumTriangles()));
+    }
+
+    // ── material slots ──────────────────────────────────────────────
+    {
+        const TArray<FStaticMaterial>& Materials = Mesh->GetStaticMaterials();
+        Result->SetNumberField(TEXT("material_slot_count"), Materials.Num());
+        TArray<TSharedPtr<FJsonValue>> SlotsArr;
+        for (int32 i = 0; i < Materials.Num(); ++i)
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            SlotObj->SetNumberField(TEXT("index"), i);
+            SlotObj->SetStringField(TEXT("slot_name"), Materials[i].MaterialSlotName.ToString());
+            SlotObj->SetStringField(TEXT("material_path"),
+                Materials[i].MaterialInterface ? Materials[i].MaterialInterface->GetPathName() : TEXT("None"));
+            SlotsArr.Add(MakeShared<FJsonValueObject>(SlotObj));
+        }
+        Result->SetArrayField(TEXT("material_slots"), SlotsArr);
+    }
+
+    // ── per-LOD details ─────────────────────────────────────────────
+    {
+        TArray<TSharedPtr<FJsonValue>> LodArr;
+        for (int32 i = 0; i < NumLODs; ++i)
+        {
+            const FStaticMeshLODResources& LODRes = RenderData->LODResources[i];
+            TSharedPtr<FJsonObject> LodObj = MakeShared<FJsonObject>();
+            LodObj->SetNumberField(TEXT("lod_index"), i);
+            LodObj->SetNumberField(TEXT("vertex_count"), LODRes.GetNumVertices());
+            LodObj->SetNumberField(TEXT("triangle_count"), static_cast<int64>(LODRes.GetNumTriangles()));
+            LodObj->SetNumberField(TEXT("section_count"), LODRes.Sections.Num());
+            LodObj->SetNumberField(TEXT("num_uv_channels"),
+                static_cast<int32>(LODRes.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords()));
+
+            // Screen size
+            if (i < MAX_STATIC_MESH_LODS)
+            {
+                LodObj->SetNumberField(TEXT("screen_size"), RenderData->ScreenSize[i].Default);
+            }
+
+            LodArr.Add(MakeShared<FJsonValueObject>(LodObj));
+        }
+        Result->SetArrayField(TEXT("lod_details"), LodArr);
+    }
+
+    // ── collision ───────────────────────────────────────────────────
+    {
+        TSharedPtr<FJsonObject> CollObj = MakeShared<FJsonObject>();
+        UBodySetup* BodySetup = Mesh->GetBodySetup();
+        if (BodySetup)
+        {
+            CollObj->SetStringField(TEXT("collision_type"),
+                CollisionTraceFlagToString(BodySetup->CollisionTraceFlag));
+
+            TSharedPtr<FJsonObject> ShapesObj = MakeShared<FJsonObject>();
+            ShapesObj->SetNumberField(TEXT("box_count"), BodySetup->AggGeom.BoxElems.Num());
+            ShapesObj->SetNumberField(TEXT("sphere_count"), BodySetup->AggGeom.SphereElems.Num());
+            ShapesObj->SetNumberField(TEXT("capsule_count"), BodySetup->AggGeom.SphylElems.Num());
+            ShapesObj->SetNumberField(TEXT("convex_count"), BodySetup->AggGeom.ConvexElems.Num());
+            CollObj->SetObjectField(TEXT("simple_shapes"), ShapesObj);
+        }
+        else
+        {
+            CollObj->SetStringField(TEXT("collision_type"), TEXT("None"));
+        }
+        Result->SetObjectField(TEXT("collision"), CollObj);
+    }
+
+    // ── vertex positions (opt-in) ───────────────────────────────────
+    if (bIncludeVertices)
+    {
+        if (LodIndex < 0 || LodIndex >= NumLODs)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("lod_index %d out of range [0, %d)"), LodIndex, NumLODs));
+        }
+
+        const FStaticMeshLODResources& LODRes = RenderData->LODResources[LodIndex];
+        const FPositionVertexBuffer& PosBuffer = LODRes.VertexBuffers.PositionVertexBuffer;
+        const uint32 NumVerts = PosBuffer.GetNumVertices();
+
+        TSharedPtr<FJsonObject> VertsObj = MakeShared<FJsonObject>();
+        VertsObj->SetNumberField(TEXT("lod_index"), LodIndex);
+        VertsObj->SetNumberField(TEXT("total_vertex_count"), static_cast<int64>(NumVerts));
+
+        const uint32 Count = FMath::Min(NumVerts, static_cast<uint32>(FMath::Max(0, MaxVertices)));
+        VertsObj->SetBoolField(TEXT("truncated"), Count < NumVerts);
+        VertsObj->SetNumberField(TEXT("returned_count"), static_cast<int64>(Count));
+
+        TArray<TSharedPtr<FJsonValue>> PosArr;
+        PosArr.Reserve(Count);
+        for (uint32 i = 0; i < Count; ++i)
+        {
+            const FVector3f& Pos = PosBuffer.VertexPosition(i);
+            TArray<TSharedPtr<FJsonValue>> XYZ;
+            XYZ.Add(MakeShared<FJsonValueNumber>(Pos.X));
+            XYZ.Add(MakeShared<FJsonValueNumber>(Pos.Y));
+            XYZ.Add(MakeShared<FJsonValueNumber>(Pos.Z));
+            PosArr.Add(MakeShared<FJsonValueArray>(XYZ));
+        }
+        VertsObj->SetArrayField(TEXT("positions"), PosArr);
+        Result->SetObjectField(TEXT("vertices"), VertsObj);
+    }
+
+    return Result;
+}
