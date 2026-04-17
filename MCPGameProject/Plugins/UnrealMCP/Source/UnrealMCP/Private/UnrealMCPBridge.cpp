@@ -63,6 +63,20 @@
 #define MCP_SERVER_HOST "127.0.0.1"
 #define MCP_SERVER_PORT 55557
 
+static int32 GetMCPPortFromEnv()
+{
+    FString PortStr = FPlatformMisc::GetEnvironmentVariable(TEXT("UNREAL_MCP_PORT"));
+    if (!PortStr.IsEmpty())
+    {
+        int32 PortVal = FCString::Atoi(*PortStr);
+        if (PortVal > 0 && PortVal <= 65535)
+        {
+            return PortVal;
+        }
+    }
+    return MCP_SERVER_PORT;
+}
+
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
     EditorCommands = MakeShared<FUnrealMCPEditorCommands>();
@@ -92,7 +106,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ListenerSocket = nullptr;
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
-    Port = MCP_SERVER_PORT;
+    Port = GetMCPPortFromEnv();
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
     // Start the server automatically

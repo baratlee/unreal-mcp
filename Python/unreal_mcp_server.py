@@ -5,6 +5,7 @@ A simple MCP server for interacting with Unreal Engine.
 """
 
 import logging
+import os
 import socket
 import sys
 import json
@@ -25,7 +26,7 @@ logger = logging.getLogger("UnrealMCP")
 
 # Configuration
 UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 55557
+UNREAL_PORT = int(os.environ.get("UNREAL_MCP_PORT", "55557"))
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""

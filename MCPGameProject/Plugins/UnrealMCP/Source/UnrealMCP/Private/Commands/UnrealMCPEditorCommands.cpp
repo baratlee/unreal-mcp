@@ -23,6 +23,9 @@
 #include "Engine/StaticMesh.h"
 #include "StaticMeshResources.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionActorDescInstance.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -88,21 +91,100 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
     TArray<TSharedPtr<FJsonValue>> ActorArray;
-    for (AActor* Actor : AllActors)
+    UWorld* World = GWorld;
+    if (!World)
     {
-        if (Actor)
+        TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+        ResultObj->SetArrayField(TEXT("actors"), ActorArray);
+        return ResultObj;
+    }
+
+    UWorldPartition* WorldPartition = World->GetWorldPartition();
+    if (WorldPartition)
+    {
+        TSet<FName> SeenActorNames;
+        FWorldPartitionHelpers::ForEachActorDescInstance(WorldPartition, AActor::StaticClass(),
+            [&ActorArray, &SeenActorNames](const FWorldPartitionActorDescInstance* ActorDescInstance) -> bool
+            {
+                if (!ActorDescInstance) return true;
+
+                FName ActorName = ActorDescInstance->GetActorName();
+                SeenActorNames.Add(ActorName);
+
+                if (ActorDescInstance->IsLoaded())
+                {
+                    AActor* Actor = ActorDescInstance->GetActor();
+                    if (Actor)
+                    {
+                        ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+                        return true;
+                    }
+                }
+
+                // Unloaded actor: extract metadata from descriptor
+                TSharedPtr<FJsonObject> ActorObject = MakeShared<FJsonObject>();
+                ActorObject->SetStringField(TEXT("name"), ActorDescInstance->GetActorLabelOrName().ToString());
+
+                UClass* NativeClass = ActorDescInstance->GetActorNativeClass();
+                ActorObject->SetStringField(TEXT("class"), NativeClass ? NativeClass->GetName() : TEXT("Unknown"));
+
+                const FTransform& Transform = ActorDescInstance->GetActorTransform();
+                FVector Location = Transform.GetLocation();
+                FRotator Rotation = Transform.GetRotation().Rotator();
+                FVector Scale = Transform.GetScale3D();
+
+                TArray<TSharedPtr<FJsonValue>> LocationArray;
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.X));
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Y));
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Z));
+                ActorObject->SetArrayField(TEXT("location"), LocationArray);
+
+                TArray<TSharedPtr<FJsonValue>> RotationArray;
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Pitch));
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Yaw));
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Roll));
+                ActorObject->SetArrayField(TEXT("rotation"), RotationArray);
+
+                TArray<TSharedPtr<FJsonValue>> ScaleArray;
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.X));
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Y));
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Z));
+                ActorObject->SetArrayField(TEXT("scale"), ScaleArray);
+
+                ActorObject->SetBoolField(TEXT("is_wp_unloaded"), true);
+
+                ActorArray.Add(MakeShared<FJsonValueObject>(ActorObject));
+                return true;
+            });
+
+        // Also pick up non-WP actors (WorldSettings, system actors, etc.)
+        TArray<AActor*> RuntimeActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), RuntimeActors);
+        for (AActor* Actor : RuntimeActors)
         {
-            ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            if (Actor && !SeenActorNames.Contains(Actor->GetFName()))
+            {
+                ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            }
         }
     }
-    
+    else
+    {
+        // Non-World-Partition map: original behavior
+        TArray<AActor*> AllActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+        for (AActor* Actor : AllActors)
+        {
+            if (Actor)
+            {
+                ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            }
+        }
+    }
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), ActorArray);
-    
     return ResultObj;
 }
 
@@ -113,22 +195,103 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindActorsByName(const T
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pattern' parameter"));
     }
-    
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
+
     TArray<TSharedPtr<FJsonValue>> MatchingActors;
-    for (AActor* Actor : AllActors)
+    UWorld* World = GWorld;
+    if (!World)
     {
-        if (Actor && Actor->GetName().Contains(Pattern))
+        TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+        ResultObj->SetArrayField(TEXT("actors"), MatchingActors);
+        return ResultObj;
+    }
+
+    UWorldPartition* WorldPartition = World->GetWorldPartition();
+    if (WorldPartition)
+    {
+        TSet<FName> SeenActorNames;
+        FWorldPartitionHelpers::ForEachActorDescInstance(WorldPartition, AActor::StaticClass(),
+            [&MatchingActors, &SeenActorNames, &Pattern](const FWorldPartitionActorDescInstance* ActorDescInstance) -> bool
+            {
+                if (!ActorDescInstance) return true;
+
+                FName ActorName = ActorDescInstance->GetActorName();
+                FString DisplayName = ActorDescInstance->GetActorLabelOrName().ToString();
+                FString InternalName = ActorName.ToString();
+                SeenActorNames.Add(ActorName);
+
+                if (!DisplayName.Contains(Pattern) && !InternalName.Contains(Pattern)) return true;
+
+                if (ActorDescInstance->IsLoaded())
+                {
+                    AActor* Actor = ActorDescInstance->GetActor();
+                    if (Actor)
+                    {
+                        MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+                        return true;
+                    }
+                }
+
+                TSharedPtr<FJsonObject> ActorObject = MakeShared<FJsonObject>();
+                ActorObject->SetStringField(TEXT("name"), DisplayName);
+
+                UClass* NativeClass = ActorDescInstance->GetActorNativeClass();
+                ActorObject->SetStringField(TEXT("class"), NativeClass ? NativeClass->GetName() : TEXT("Unknown"));
+
+                const FTransform& Transform = ActorDescInstance->GetActorTransform();
+                FVector Location = Transform.GetLocation();
+                FRotator Rotation = Transform.GetRotation().Rotator();
+                FVector Scale = Transform.GetScale3D();
+
+                TArray<TSharedPtr<FJsonValue>> LocationArray;
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.X));
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Y));
+                LocationArray.Add(MakeShared<FJsonValueNumber>(Location.Z));
+                ActorObject->SetArrayField(TEXT("location"), LocationArray);
+
+                TArray<TSharedPtr<FJsonValue>> RotationArray;
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Pitch));
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Yaw));
+                RotationArray.Add(MakeShared<FJsonValueNumber>(Rotation.Roll));
+                ActorObject->SetArrayField(TEXT("rotation"), RotationArray);
+
+                TArray<TSharedPtr<FJsonValue>> ScaleArray;
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.X));
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Y));
+                ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Z));
+                ActorObject->SetArrayField(TEXT("scale"), ScaleArray);
+
+                ActorObject->SetBoolField(TEXT("is_wp_unloaded"), true);
+
+                MatchingActors.Add(MakeShared<FJsonValueObject>(ActorObject));
+                return true;
+            });
+
+        // Also check non-WP actors
+        TArray<AActor*> RuntimeActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), RuntimeActors);
+        for (AActor* Actor : RuntimeActors)
         {
-            MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            if (Actor && !SeenActorNames.Contains(Actor->GetFName()) && Actor->GetName().Contains(Pattern))
+            {
+                MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            }
         }
     }
-    
+    else
+    {
+        TArray<AActor*> AllActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+        for (AActor* Actor : AllActors)
+        {
+            if (Actor && Actor->GetName().Contains(Pattern))
+            {
+                MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            }
+        }
+    }
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), MatchingActors);
-    
     return ResultObj;
 }
 
