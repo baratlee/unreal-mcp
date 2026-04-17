@@ -5,10 +5,10 @@ A simple MCP server for interacting with Unreal Engine.
 """
 
 import logging
-import os
 import socket
 import sys
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP

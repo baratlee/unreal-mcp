@@ -1,5 +1,6 @@
 #include "UnrealMCPBridge.h"
 #include "MCPServerRunnable.h"
+#include "Misc/FileHelper.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "HAL/RunnableThread.h"
@@ -63,15 +64,34 @@
 #define MCP_SERVER_HOST "127.0.0.1"
 #define MCP_SERVER_PORT 55557
 
-static int32 GetMCPPortFromEnv()
+static int32 GetMCPPortFromSettings()
 {
-    FString PortStr = FPlatformMisc::GetEnvironmentVariable(TEXT("UNREAL_MCP_PORT"));
-    if (!PortStr.IsEmpty())
+    const FString SettingsNames[] = { TEXT("settings.local.json"), TEXT("settings.json") };
+    for (const FString& FileName : SettingsNames)
     {
-        int32 PortVal = FCString::Atoi(*PortStr);
-        if (PortVal > 0 && PortVal <= 65535)
+        FString FilePath = FPaths::ProjectDir() / TEXT(".claude") / FileName;
+        FString FileContent;
+        if (FFileHelper::LoadFileToString(FileContent, *FilePath))
         {
-            return PortVal;
+            TSharedPtr<FJsonObject> JsonObj;
+            TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FileContent);
+            if (FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid())
+            {
+                const TSharedPtr<FJsonObject>* EnvObj = nullptr;
+                if (JsonObj->TryGetObjectField(TEXT("env"), EnvObj) && EnvObj && (*EnvObj).IsValid())
+                {
+                    FString PortStr;
+                    if ((*EnvObj)->TryGetStringField(TEXT("UNREAL_MCP_PORT"), PortStr))
+                    {
+                        int32 PortVal = FCString::Atoi(*PortStr);
+                        if (PortVal > 0 && PortVal <= 65535)
+                        {
+                            UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Using port %d from %s"), PortVal, *FilePath);
+                            return PortVal;
+                        }
+                    }
+                }
+            }
         }
     }
     return MCP_SERVER_PORT;
@@ -106,7 +126,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ListenerSocket = nullptr;
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
-    Port = GetMCPPortFromEnv();
+    Port = GetMCPPortFromSettings();
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
     // Start the server automatically
