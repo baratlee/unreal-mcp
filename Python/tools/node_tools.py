@@ -385,26 +385,27 @@ def register_blueprint_node_tools(mcp: FastMCP):
         ctx: Context,
         blueprint_name: str,
         node_type = None,
-        event_type = None
+        event_name = None
     ) -> Dict[str, Any]:
         """
         Find nodes in a Blueprint's event graph.
-        
+
         Args:
             blueprint_name: Name of the target Blueprint
             node_type: Optional type of node to find (Event, Function, Variable, etc.)
-            event_type: Optional specific event type to find (BeginPlay, Tick, etc.)
-            
+            event_name: Optional specific event name to find.
+                Use UE internal names: ReceiveBeginPlay, ReceiveTick, etc.
+
         Returns:
             Response containing array of found node IDs and success status
         """
         from unreal_mcp_server import get_unreal_connection
-        
+
         try:
             params = {
                 "blueprint_name": blueprint_name,
                 "node_type": node_type,
-                "event_type": event_type
+                "event_name": event_name
             }
             
             unreal = get_unreal_connection()
@@ -427,4 +428,101 @@ def register_blueprint_node_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
     
+    @mcp.tool()
+    def add_blueprint_variable_get(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str,
+        node_position: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Add a Variable Get node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name or path of the Blueprint
+            variable_name: Name of the variable to read
+            node_position: Optional "[X, Y]" position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"blueprint_name": blueprint_name, "variable_name": variable_name}
+            if node_position:
+                params["node_position"] = node_position
+
+            response = unreal.send_command("add_blueprint_variable_get", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_variable_set(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str,
+        node_position: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Add a Variable Set node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name or path of the Blueprint
+            variable_name: Name of the variable to write
+            node_position: Optional "[X, Y]" position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"blueprint_name": blueprint_name, "variable_name": variable_name}
+            if node_position:
+                params["node_position"] = node_position
+
+            response = unreal.send_command("add_blueprint_variable_set", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_branch(
+        ctx: Context,
+        blueprint_name: str,
+        node_position: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Add a Branch (if/else) node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name or path of the Blueprint
+            node_position: Optional "[X, Y]" position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"blueprint_name": blueprint_name}
+            if node_position:
+                params["node_position"] = node_position
+
+            response = unreal.send_command("add_blueprint_branch", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Blueprint node tools registered successfully")
