@@ -83,17 +83,20 @@ def register_editor_tools(mcp: FastMCP):
         name: str,
         type: str,
         location: List[float] = [0.0, 0.0, 0.0],
-        rotation: List[float] = [0.0, 0.0, 0.0]
+        rotation: List[float] = [0.0, 0.0, 0.0],
+        mesh: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new actor in the current level.
-        
+
         Args:
             ctx: The MCP context
             name: The name to give the new actor (must be unique)
             type: The type of actor to create (e.g. StaticMeshActor, PointLight)
             location: The [x, y, z] world location to spawn at
             rotation: The [pitch, yaw, roll] rotation in degrees
-            
+            mesh: Asset path of the StaticMesh to assign (only for StaticMeshActor),
+                e.g. "/Engine/BasicShapes/Sphere", "/Engine/BasicShapes/Cube"
+
         Returns:
             Dict containing the created actor's properties
         """
@@ -108,10 +111,12 @@ def register_editor_tools(mcp: FastMCP):
             # Ensure all parameters are properly formatted
             params = {
                 "name": name,
-                "type": type.upper(),  # Make sure type is uppercase
+                "type": type,
                 "location": location,
                 "rotation": rotation
             }
+            if mesh:
+                params["mesh"] = mesh
             
             # Validate location and rotation formats
             for param_name in ["location", "rotation"]:

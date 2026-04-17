@@ -14,6 +14,7 @@
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
 	"Installed": false,
+	"bPrecompiled": true,
 	"Modules": [
 		{
 			"Name": "UnrealMCP",

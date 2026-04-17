@@ -355,6 +355,19 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     if (ActorType == TEXT("StaticMeshActor"))
     {
         NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
+        if (NewActor)
+        {
+            FString MeshPath;
+            if (Params->TryGetStringField(TEXT("mesh"), MeshPath))
+            {
+                UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+                if (Mesh)
+                {
+                    AStaticMeshActor* SMActor = Cast<AStaticMeshActor>(NewActor);
+                    SMActor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+                }
+            }
+        }
     }
     else if (ActorType == TEXT("PointLight"))
     {
