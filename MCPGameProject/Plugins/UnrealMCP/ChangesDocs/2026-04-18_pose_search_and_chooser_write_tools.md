@@ -62,3 +62,20 @@
 - 支持 FEnumColumn（通过枚举名查找值）和 FBoolColumn
 - 未知列类型通过反射 `RowValuesPropertyName()` 添加默认值
 - 所有写入操作调用 `Modify()` + `MarkPackageDirty()`
+
+## 端到端验证 ✅ (2026-04-18)
+
+### PSS 写入
+- `set_pose_search_schema_settings`：PSS_Test 设 sample_rate=30 + GermanShepherd_Skeleton → 读回确认 ✅
+- `add_pose_search_schema_channel`：加 Trajectory 通道（3 samples）→ new_index=2 ✅；加 Pose 通道（weight=0.8, RigLFLegAnkle+RigRFLegAnkle）→ new_index=3 ✅；读回 channel_count=4 结构完整
+- `remove_pose_search_schema_channel`：删 index 2 → channel_count 降到 3 ✅
+- 注意：空 PSS 创建时自带 2 个默认通道（Trajectory+Pose），所以新增通道 index 从 2 开始
+
+### PSD 写入
+- `set_pose_search_database_schema`：PSD_Test 设 schema→PSS_Test ✅
+- `add_pose_search_database_animation`：加 Stand_01→index 0 ✅；加 Loco_Walk→index 1 ✅；读回 animation_asset_count=2 ✅
+- `remove_pose_search_database_animation`：删 index 0 → animation_asset_count=1，仅剩 Loco_Walk ✅
+
+### ChooserTable 写入
+- `add_chooser_table_row`：CHT_PoseSearchQuad 原 4 行，加 PSD_Test（column_values=["Idle"]）→ new_row_index=4 ✅；读回 row_count=5 ✅
+- `remove_chooser_table_row`：删 index 4 → row_count 恢复 4，原始数据不变 ✅

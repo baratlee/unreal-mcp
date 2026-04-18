@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 51 tools total, organized by category.
+> 61 tools total, organized by category.
 
 ---
 
@@ -75,11 +75,13 @@
 | `get_skeleton_retarget_modes` | 获取 USkeleton 每根骨骼的 TranslationRetargetingMode |
 | `list_chooser_tables` | 通过 Asset Registry 列出项目中所有 UChooserTable 资产 |
 
-## Chooser Table Tools (1)
+## Chooser Table Tools (3)
 
 | Tool | Description |
 |---|---|
 | `get_chooser_table_info` | 读取 UChooserTable 的结构骨架：列定义 + 结果行（asset/nested_chooser 等 4 种 kind） |
+| `add_chooser_table_row` | 添加行（asset result + 按列位置传入条件值，支持 Enum/Bool 列） |
+| `remove_chooser_table_row` | 按 index 移除行（同步移除所有列的行值） |
 
 ## IK Tools (4)
 
@@ -97,6 +99,19 @@
 | `get_anim_state_machine` | 获取 AnimBP 中状态机的结构：状态列表 + 转换拓扑 + 入口状态 |
 | `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图 |
 | `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等） |
+
+## Pose Search Tools (8)
+
+| Tool | Description |
+|---|---|
+| `get_pose_search_database_info` | 读取 PSD 结构：Schema 引用、动画资产列表、Tags、成本偏置、搜索模式 |
+| `get_pose_search_schema_info` | 读取 PSS 结构：采样率、骨骼引用、数据预处理、通道层级递归序列化 |
+| `set_pose_search_database_schema` | 设置 PSD 的 Schema 引用 |
+| `add_pose_search_database_animation` | 添加动画条目（路径 + enabled + sampling range） |
+| `remove_pose_search_database_animation` | 按 index 移除动画条目 |
+| `set_pose_search_schema_settings` | 设置 PSS 的采样率、骨骼引用 |
+| `add_pose_search_schema_channel` | 添加通道（Trajectory/Pose/Position/Velocity/Heading/Curve） |
+| `remove_pose_search_schema_channel` | 按 index 移除通道 |
 
 ## Enhanced Input Tools (2)
 

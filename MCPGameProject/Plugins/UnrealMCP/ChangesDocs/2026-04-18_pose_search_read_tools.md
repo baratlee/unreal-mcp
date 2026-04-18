@@ -48,11 +48,9 @@
 - 头文件路径：`PoseSearch/PoseSearchDatabase.h` 等（Runtime/Public 下）
 - PoseSearch 插件位于 `Engine/Plugins/Animation/PoseSearch/`
 
-## 端到端验证步骤
+## 端到端验证 ✅ (2026-04-18)
 
-1. 关 UE → 重编 UnrealMCP 插件 → 启 UE → `/exit` 重启 Claude Code
-2. 找一个已知的 PSD 资产路径，调用 `get_pose_search_database_info(asset_path)`
-   - 验证：animation_asset_count > 0、schema 非 None、每个 asset 有 anim_asset_path
-3. 从 PSD 结果中拿到 schema 路径，调用 `get_pose_search_schema_info(asset_path)`
-   - 验证：channel_count > 0、channels 递归结构完整（Trajectory/Pose 等含子通道）
-4. 错误路径：把非 PSD 资产路径喂给 `get_pose_search_database_info` 应返回 `PoseSearchDatabase asset not found`
+- **PSD_QuadIdle**：animation_asset_count=2、schema→PSS_QuadDefault、continuing_pose_cost_bias=-0.05、pose_search_mode="PCAKDTree"、每条 asset 有 anim_asset_path/anim_asset_class/enabled/mirror_option/sampling_range ✅
+- **PSD_QuadWalk**：animation_asset_count=3、字段完整 ✅
+- **PSS_QuadDefault**：sample_rate=30、schema_cardinality=27、data_preprocessor="NormalizeWithCommonSchema"、skeleton_count=1→GermanShepherd_Skeleton、channel_count=2（Trajectory 含 5 samples + 9 sub_channels、Group 含 3 sub_channels 引用 RigLFLegAnkle/RigRFLegAnkle/RigPelvis）、递归序列化完整 ✅
+- **错误路径**：ChooserTable 喂 PSD → "PoseSearchDatabase asset not found" ✅；AnimSequence 喂 PSS → "PoseSearchSchema asset not found" ✅

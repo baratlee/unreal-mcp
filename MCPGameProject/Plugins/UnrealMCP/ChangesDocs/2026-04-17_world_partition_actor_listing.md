@@ -60,11 +60,14 @@
 }
 ```
 
-## Verification
+## Verification ✅ (2026-04-18)
 
-需要在启用 World Partition 的地图中：
-1. 新建一个 Actor（如 Cube），视口移到远处使其所在 cell 卸载
-2. 调用 `get_actors_in_level`，确认能看到该 Actor 且带 `is_wp_unloaded: true`
-3. 调用 `find_actors_by_name(pattern="Cube")`，确认能搜到
-4. 视口移回 Actor 附近，重新调用，确认 `is_wp_unloaded` 消失（变为正常的已加载 Actor 输出）
-5. 在非 WP 地图上调用，确认行为不变
+在 OpenWorld1 地图上完成端到端验证：
+
+- `find_actors_by_name("Cube")`：返回 2 个结果
+  - **Cube**（已加载，视口附近 [-1340,20,260]）：有 `label` 字段，无 `is_wp_unloaded` ✅
+  - **Cube2**（未加载，远处 [200000,200000,260]）：带 `is_wp_unloaded: true` ✅
+- `get_actors_in_level`：完整列出所有 WP Actor（HLOD、LandscapeStreamingProxy、灯光、Cube 等）
+  - 未加载 Actor 全部带 `is_wp_unloaded: true` ✅
+  - 已加载 Actor 不带该标记 ✅
+  - 系统 Actor（WorldSettings、DefaultPhysicsVolume 等）正常出现 ✅
