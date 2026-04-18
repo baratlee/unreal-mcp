@@ -29,6 +29,18 @@
 #include "EnhancedActionKeyMapping.h"
 #include "InputTriggers.h"
 #include "InputModifiers.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearch/PoseSearchFeatureChannel.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Trajectory.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Pose.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Position.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Velocity.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Heading.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Curve.h"
+#include "PoseSearch/PoseSearchFeatureChannel_Group.h"
+#include "EnumColumn.h"
+#include "BoolColumn.h"
 
 namespace
 {
@@ -121,6 +133,46 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_input_mapping_context_info"))
     {
         return HandleGetInputMappingContextInfo(Params);
+    }
+    if (CommandType == TEXT("get_pose_search_database_info"))
+    {
+        return HandleGetPoseSearchDatabaseInfo(Params);
+    }
+    if (CommandType == TEXT("get_pose_search_schema_info"))
+    {
+        return HandleGetPoseSearchSchemaInfo(Params);
+    }
+    if (CommandType == TEXT("set_pose_search_database_schema"))
+    {
+        return HandleSetPoseSearchDatabaseSchema(Params);
+    }
+    if (CommandType == TEXT("add_pose_search_database_animation"))
+    {
+        return HandleAddPoseSearchDatabaseAnimation(Params);
+    }
+    if (CommandType == TEXT("remove_pose_search_database_animation"))
+    {
+        return HandleRemovePoseSearchDatabaseAnimation(Params);
+    }
+    if (CommandType == TEXT("set_pose_search_schema_settings"))
+    {
+        return HandleSetPoseSearchSchemaSettings(Params);
+    }
+    if (CommandType == TEXT("add_pose_search_schema_channel"))
+    {
+        return HandleAddPoseSearchSchemaChannel(Params);
+    }
+    if (CommandType == TEXT("remove_pose_search_schema_channel"))
+    {
+        return HandleRemovePoseSearchSchemaChannel(Params);
+    }
+    if (CommandType == TEXT("add_chooser_table_row"))
+    {
+        return HandleAddChooserTableRow(Params);
+    }
+    if (CommandType == TEXT("remove_chooser_table_row"))
+    {
+        return HandleRemoveChooserTableRow(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -1366,4 +1418,1100 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetInputMappingContex
     Result->SetArrayField(TEXT("mappings"), MappingsJson);
 
     return Result;
+}
+
+// ── Pose Search helpers ──────────────────────────────────────────────
+
+namespace
+{
+    TSharedPtr<FJsonObject> SerializeChannelRecursive(const UPoseSearchFeatureChannel* Channel)
+    {
+        if (!Channel) return nullptr;
+
+        TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+
+        // Class name (e.g. "PoseSearchFeatureChannel_Trajectory")
+        Obj->SetStringField(TEXT("channel_class"), Channel->GetClass()->GetName());
+
+
+        // Use UE reflection to read all EditAnywhere UPROPERTY fields
+        // and serialize the most useful ones by known property names.
+        const UClass* Class = Channel->GetClass();
+
+        // Weight (most channel subclasses have this, WITH_EDITORONLY_DATA)
+#if WITH_EDITORONLY_DATA
+        if (const FProperty* WeightProp = Class->FindPropertyByName(TEXT("Weight")))
+        {
+            if (const FFloatProperty* FloatProp = CastField<FFloatProperty>(WeightProp))
+            {
+                Obj->SetNumberField(TEXT("weight"), FloatProp->GetPropertyValue_InContainer(Channel));
+            }
+        }
+#endif
+
+        // Bone (FBoneReference — has BoneName)
+        if (const FProperty* BoneProp = Class->FindPropertyByName(TEXT("Bone")))
+        {
+            if (const FStructProperty* StructProp = CastField<FStructProperty>(BoneProp))
+            {
+                const void* StructAddr = StructProp->ContainerPtrToValuePtr<void>(Channel);
+                if (const FProperty* BoneNameProp = StructProp->Struct->FindPropertyByName(TEXT("BoneName")))
+                {
+                    if (const FNameProperty* NameProp = CastField<FNameProperty>(BoneNameProp))
+                    {
+                        FName BoneName = NameProp->GetPropertyValue_InContainer(StructAddr);
+                        Obj->SetStringField(TEXT("bone_name"), BoneName.ToString());
+                    }
+                }
+            }
+        }
+
+        // SampleRole
+        if (const FProperty* RoleProp = Class->FindPropertyByName(TEXT("SampleRole")))
+        {
+            if (const FNameProperty* NameProp = CastField<FNameProperty>(RoleProp))
+            {
+                Obj->SetStringField(TEXT("sample_role"), NameProp->GetPropertyValue_InContainer(Channel).ToString());
+            }
+        }
+
+        // SampleTimeOffset
+        if (const FProperty* Prop = Class->FindPropertyByName(TEXT("SampleTimeOffset")))
+        {
+            if (const FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
+            {
+                Obj->SetNumberField(TEXT("sample_time_offset"), FloatProp->GetPropertyValue_InContainer(Channel));
+            }
+        }
+
+        // InputQueryPose enum
+        if (const FProperty* Prop = Class->FindPropertyByName(TEXT("InputQueryPose")))
+        {
+            if (const FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+            {
+                Obj->SetNumberField(TEXT("input_query_pose"), (int32)ByteProp->GetPropertyValue_InContainer(Channel));
+            }
+            else if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+            {
+                const UEnum* EnumDef = EnumProp->GetEnum();
+                const FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+                int64 Val = UnderlyingProp->GetSignedIntPropertyValue(EnumProp->ContainerPtrToValuePtr<void>(Channel));
+                Obj->SetStringField(TEXT("input_query_pose"), EnumDef ? EnumDef->GetNameStringByValue(Val) : FString::FromInt(Val));
+            }
+        }
+
+        // ComponentStripping enum
+        if (const FProperty* Prop = Class->FindPropertyByName(TEXT("ComponentStripping")))
+        {
+            if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+            {
+                const UEnum* EnumDef = EnumProp->GetEnum();
+                const FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+                int64 Val = UnderlyingProp->GetSignedIntPropertyValue(EnumProp->ContainerPtrToValuePtr<void>(Channel));
+                Obj->SetStringField(TEXT("component_stripping"), EnumDef ? EnumDef->GetNameStringByValue(Val) : FString::FromInt(Val));
+            }
+        }
+
+        // bUseCharacterSpaceVelocities
+        if (const FProperty* Prop = Class->FindPropertyByName(TEXT("bUseCharacterSpaceVelocities")))
+        {
+            if (const FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+            {
+                Obj->SetBoolField(TEXT("use_character_space_velocities"), BoolProp->GetPropertyValue_InContainer(Channel));
+            }
+        }
+
+        // ── Trajectory channel: Samples array ──
+        if (const FProperty* SamplesProp = Class->FindPropertyByName(TEXT("Samples")))
+        {
+            if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(SamplesProp))
+            {
+                FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Channel));
+                TArray<TSharedPtr<FJsonValue>> SamplesJson;
+                const FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner);
+
+                for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+                {
+                    TSharedPtr<FJsonObject> SampleObj = MakeShared<FJsonObject>();
+                    const void* ElemPtr = ArrayHelper.GetRawPtr(i);
+
+                    if (InnerStruct && InnerStruct->Struct)
+                    {
+                        if (const FFloatProperty* OffsetProp = CastField<FFloatProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Offset"))))
+                        {
+                            SampleObj->SetNumberField(TEXT("offset"), OffsetProp->GetPropertyValue(OffsetProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+                        }
+                        if (const FIntProperty* FlagsProp = CastField<FIntProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Flags"))))
+                        {
+                            SampleObj->SetNumberField(TEXT("flags"), FlagsProp->GetPropertyValue(FlagsProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+                        }
+#if WITH_EDITORONLY_DATA
+                        if (const FFloatProperty* WProp = CastField<FFloatProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Weight"))))
+                        {
+                            SampleObj->SetNumberField(TEXT("weight"), WProp->GetPropertyValue(WProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+                        }
+#endif
+                    }
+                    SamplesJson.Add(MakeShared<FJsonValueObject>(SampleObj));
+                }
+                Obj->SetNumberField(TEXT("sample_count"), SamplesJson.Num());
+                Obj->SetArrayField(TEXT("samples"), SamplesJson);
+            }
+        }
+
+        // ── Pose channel: SampledBones array ──
+        if (const FProperty* BonesProp = Class->FindPropertyByName(TEXT("SampledBones")))
+        {
+            if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(BonesProp))
+            {
+                FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Channel));
+                TArray<TSharedPtr<FJsonValue>> BonesJson;
+                const FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner);
+
+                for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+                {
+                    TSharedPtr<FJsonObject> BoneObj = MakeShared<FJsonObject>();
+                    const void* ElemPtr = ArrayHelper.GetRawPtr(i);
+
+                    if (InnerStruct && InnerStruct->Struct)
+                    {
+                        // FBoneReference.BoneName
+                        if (const FStructProperty* RefProp = CastField<FStructProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Reference"))))
+                        {
+                            const void* RefAddr = RefProp->ContainerPtrToValuePtr<void>(ElemPtr);
+                            if (const FNameProperty* BNProp = CastField<FNameProperty>(RefProp->Struct->FindPropertyByName(TEXT("BoneName"))))
+                            {
+                                BoneObj->SetStringField(TEXT("bone_name"), BNProp->GetPropertyValue_InContainer(RefAddr).ToString());
+                            }
+                        }
+                        if (const FIntProperty* FlagsProp = CastField<FIntProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Flags"))))
+                        {
+                            BoneObj->SetNumberField(TEXT("flags"), FlagsProp->GetPropertyValue(FlagsProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+                        }
+#if WITH_EDITORONLY_DATA
+                        if (const FFloatProperty* WProp = CastField<FFloatProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Weight"))))
+                        {
+                            BoneObj->SetNumberField(TEXT("weight"), WProp->GetPropertyValue(WProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+                        }
+#endif
+                    }
+                    BonesJson.Add(MakeShared<FJsonValueObject>(BoneObj));
+                }
+                Obj->SetNumberField(TEXT("sampled_bone_count"), BonesJson.Num());
+                Obj->SetArrayField(TEXT("sampled_bones"), BonesJson);
+            }
+        }
+
+        // ── Curve channel: CurveName ──
+        if (const FProperty* Prop = Class->FindPropertyByName(TEXT("CurveName")))
+        {
+            if (const FNameProperty* NameProp = CastField<FNameProperty>(Prop))
+            {
+                Obj->SetStringField(TEXT("curve_name"), NameProp->GetPropertyValue_InContainer(Channel).ToString());
+            }
+        }
+
+        // ── Sub-channels (Group/Trajectory/Pose channels) ──
+        TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> SubChannels = Channel->GetSubChannels();
+        if (SubChannels.Num() > 0)
+        {
+            TArray<TSharedPtr<FJsonValue>> SubJson;
+            for (const TObjectPtr<UPoseSearchFeatureChannel>& Sub : SubChannels)
+            {
+                if (TSharedPtr<FJsonObject> SubObj = SerializeChannelRecursive(Sub.Get()))
+                {
+                    SubJson.Add(MakeShared<FJsonValueObject>(SubObj));
+                }
+            }
+            Obj->SetNumberField(TEXT("sub_channel_count"), SubJson.Num());
+            Obj->SetArrayField(TEXT("sub_channels"), SubJson);
+        }
+
+        return Obj;
+    }
+}
+
+// ── get_pose_search_database_info ──────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetPoseSearchDatabaseInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase asset not found"));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetStringField(TEXT("asset_class"), TEXT("PoseSearchDatabase"));
+
+    // Schema reference
+    const UPoseSearchSchema* Schema = Database->Schema;
+    Result->SetStringField(TEXT("schema"), Schema ? Schema->GetPathName() : TEXT("None"));
+
+    // Tags
+    TArray<TSharedPtr<FJsonValue>> TagsJson;
+    for (const FName& Tag : Database->Tags)
+    {
+        TagsJson.Add(MakeShared<FJsonValueString>(Tag.ToString()));
+    }
+    Result->SetNumberField(TEXT("tag_count"), TagsJson.Num());
+    Result->SetArrayField(TEXT("tags"), TagsJson);
+
+    // Cost biases
+    Result->SetNumberField(TEXT("continuing_pose_cost_bias"), Database->ContinuingPoseCostBias);
+    Result->SetNumberField(TEXT("base_cost_bias"), Database->BaseCostBias);
+    Result->SetNumberField(TEXT("looping_cost_bias"), Database->LoopingCostBias);
+
+    // Search mode
+    FString ModeStr;
+    switch (Database->PoseSearchMode)
+    {
+    case EPoseSearchMode::BruteForce: ModeStr = TEXT("BruteForce"); break;
+    case EPoseSearchMode::PCAKDTree:  ModeStr = TEXT("PCAKDTree"); break;
+    case EPoseSearchMode::VPTree:     ModeStr = TEXT("VPTree"); break;
+    default:                           ModeStr = TEXT("Unknown"); break;
+    }
+    Result->SetStringField(TEXT("pose_search_mode"), ModeStr);
+
+    // Animation assets — access via reflection (DatabaseAnimationAssets is private UPROPERTY)
+    const FProperty* AssetsProp = Database->GetClass()->FindPropertyByName(TEXT("DatabaseAnimationAssets"));
+    const FArrayProperty* AssetsArrayProp = AssetsProp ? CastField<FArrayProperty>(AssetsProp) : nullptr;
+
+    TArray<TSharedPtr<FJsonValue>> AssetsJson;
+
+    if (AssetsArrayProp)
+    {
+        FScriptArrayHelper ArrayHelper(AssetsArrayProp, AssetsArrayProp->ContainerPtrToValuePtr<void>(Database));
+        const FStructProperty* InnerStruct = CastField<FStructProperty>(AssetsArrayProp->Inner);
+
+        for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+        {
+            TSharedPtr<FJsonObject> AssetObj = MakeShared<FJsonObject>();
+            const void* ElemPtr = ArrayHelper.GetRawPtr(i);
+            AssetObj->SetNumberField(TEXT("index"), i);
+
+            if (InnerStruct && InnerStruct->Struct)
+            {
+                const UStruct* S = InnerStruct->Struct;
+
+                // AnimAsset (TObjectPtr<UObject>)
+                if (const FObjectProperty* AnimProp = CastField<FObjectProperty>(S->FindPropertyByName(TEXT("AnimAsset"))))
+                {
+                    UObject* AnimObj = AnimProp->GetObjectPropertyValue(AnimProp->ContainerPtrToValuePtr<void>(ElemPtr));
+                    if (AnimObj)
+                    {
+                        AssetObj->SetStringField(TEXT("anim_asset_path"), AnimObj->GetPathName());
+                        AssetObj->SetStringField(TEXT("anim_asset_class"), AnimObj->GetClass()->GetName());
+                    }
+                    else
+                    {
+                        AssetObj->SetStringField(TEXT("anim_asset_path"), TEXT("None"));
+                    }
+                }
+
+#if WITH_EDITORONLY_DATA
+                // bEnabled
+                if (const FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bEnabled"))))
+                {
+                    AssetObj->SetBoolField(TEXT("enabled"), Prop->GetPropertyValue_InContainer(ElemPtr));
+                }
+
+                // bDisableReselection
+                if (const FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bDisableReselection"))))
+                {
+                    AssetObj->SetBoolField(TEXT("disable_reselection"), Prop->GetPropertyValue_InContainer(ElemPtr));
+                }
+
+                // MirrorOption
+                if (const FProperty* Prop = S->FindPropertyByName(TEXT("MirrorOption")))
+                {
+                    if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+                    {
+                        const UEnum* EnumDef = EnumProp->GetEnum();
+                        const FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+                        int64 Val = UnderlyingProp->GetSignedIntPropertyValue(EnumProp->ContainerPtrToValuePtr<void>(ElemPtr));
+                        AssetObj->SetStringField(TEXT("mirror_option"), EnumDef ? EnumDef->GetNameStringByValue(Val) : FString::FromInt(Val));
+                    }
+                }
+
+                // SamplingRange
+                if (const FStructProperty* Prop = CastField<FStructProperty>(S->FindPropertyByName(TEXT("SamplingRange"))))
+                {
+                    const FFloatInterval* Interval = Prop->ContainerPtrToValuePtr<FFloatInterval>(ElemPtr);
+                    if (Interval)
+                    {
+                        AssetObj->SetNumberField(TEXT("sampling_range_min"), Interval->Min);
+                        AssetObj->SetNumberField(TEXT("sampling_range_max"), Interval->Max);
+                    }
+                }
+
+                // bUseSingleSample
+                if (const FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bUseSingleSample"))))
+                {
+                    AssetObj->SetBoolField(TEXT("use_single_sample"), Prop->GetPropertyValue_InContainer(ElemPtr));
+                }
+#endif
+            }
+
+            AssetsJson.Add(MakeShared<FJsonValueObject>(AssetObj));
+        }
+    }
+
+    Result->SetNumberField(TEXT("animation_asset_count"), AssetsJson.Num());
+    Result->SetArrayField(TEXT("animation_assets"), AssetsJson);
+
+    return Result;
+}
+
+// ── get_pose_search_schema_info ────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetPoseSearchSchemaInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema asset not found"));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetStringField(TEXT("asset_class"), TEXT("PoseSearchSchema"));
+
+    // SampleRate
+    Result->SetNumberField(TEXT("sample_rate"), Schema->SampleRate);
+
+    // SchemaCardinality
+    Result->SetNumberField(TEXT("schema_cardinality"), Schema->SchemaCardinality);
+
+#if WITH_EDITORONLY_DATA
+    // DataPreprocessor
+    FString PreprocessorStr;
+    switch (Schema->DataPreprocessor)
+    {
+    case EPoseSearchDataPreprocessor::None:                        PreprocessorStr = TEXT("None"); break;
+    case EPoseSearchDataPreprocessor::Normalize:                   PreprocessorStr = TEXT("Normalize"); break;
+    case EPoseSearchDataPreprocessor::NormalizeOnlyByDeviation:    PreprocessorStr = TEXT("NormalizeOnlyByDeviation"); break;
+    case EPoseSearchDataPreprocessor::NormalizeWithCommonSchema:   PreprocessorStr = TEXT("NormalizeWithCommonSchema"); break;
+    default:                                                       PreprocessorStr = TEXT("Unknown"); break;
+    }
+    Result->SetStringField(TEXT("data_preprocessor"), PreprocessorStr);
+#endif
+
+    // Skeletons
+    const TArray<FPoseSearchRoledSkeleton>& Skeletons = Schema->GetRoledSkeletons();
+    TArray<TSharedPtr<FJsonValue>> SkeletonsJson;
+    for (const FPoseSearchRoledSkeleton& RS : Skeletons)
+    {
+        TSharedPtr<FJsonObject> SkObj = MakeShared<FJsonObject>();
+        SkObj->SetStringField(TEXT("skeleton"), RS.Skeleton ? RS.Skeleton->GetPathName() : TEXT("None"));
+        SkObj->SetStringField(TEXT("role"), RS.Role.ToString());
+        if (const FObjectProperty* MirrorProp = CastField<FObjectProperty>(FPoseSearchRoledSkeleton::StaticStruct()->FindPropertyByName(TEXT("MirrorDataTable"))))
+        {
+            const UObject* MirrorObj = MirrorProp->GetObjectPropertyValue_InContainer(&RS);
+            SkObj->SetStringField(TEXT("mirror_data_table"), MirrorObj ? MirrorObj->GetPathName() : TEXT("None"));
+        }
+        SkeletonsJson.Add(MakeShared<FJsonValueObject>(SkObj));
+    }
+    Result->SetNumberField(TEXT("skeleton_count"), SkeletonsJson.Num());
+    Result->SetArrayField(TEXT("skeletons"), SkeletonsJson);
+
+    // Channels — access via reflection (Channels is private UPROPERTY)
+    // We read the user-authored Channels array, not FinalizedChannels (which may be empty if not finalized)
+    const FProperty* ChannelsProp = Schema->GetClass()->FindPropertyByName(TEXT("Channels"));
+    const FArrayProperty* ChannelsArrayProp = ChannelsProp ? CastField<FArrayProperty>(ChannelsProp) : nullptr;
+
+    TArray<TSharedPtr<FJsonValue>> ChannelsJson;
+
+    if (ChannelsArrayProp)
+    {
+        FScriptArrayHelper ArrayHelper(ChannelsArrayProp, ChannelsArrayProp->ContainerPtrToValuePtr<void>(Schema));
+
+        for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+        {
+            const void* ElemPtr = ArrayHelper.GetRawPtr(i);
+            // TObjectPtr<UPoseSearchFeatureChannel> — dereference via FObjectProperty
+            const FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ChannelsArrayProp->Inner);
+            UObject* ChannelObj = InnerObjProp ? InnerObjProp->GetObjectPropertyValue(ElemPtr) : nullptr;
+            UPoseSearchFeatureChannel* Channel = Cast<UPoseSearchFeatureChannel>(ChannelObj);
+
+            if (TSharedPtr<FJsonObject> ChObj = SerializeChannelRecursive(Channel))
+            {
+                ChannelsJson.Add(MakeShared<FJsonValueObject>(ChObj));
+            }
+        }
+    }
+
+    Result->SetNumberField(TEXT("channel_count"), ChannelsJson.Num());
+    Result->SetArrayField(TEXT("channels"), ChannelsJson);
+
+    return Result;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PSD Write Tools
+// ══════════════════════════════════════════════════════════════════════
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabaseSchema(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, SchemaPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetStringField(TEXT("schema_path"), SchemaPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'schema_path'"));
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase not found"));
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *SchemaPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    Database->Modify();
+    FObjectProperty* SchemaProp = CastField<FObjectProperty>(Database->GetClass()->FindPropertyByName(TEXT("Schema")));
+    if (SchemaProp)
+    {
+        SchemaProp->SetObjectPropertyValue_InContainer(Database, Schema);
+    }
+    Database->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("schema"), Schema->GetPathName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddPoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, AnimAssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetStringField(TEXT("anim_asset_path"), AnimAssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'anim_asset_path'"));
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase not found"));
+
+    UObject* AnimAsset = LoadObject<UObject>(nullptr, *AnimAssetPath);
+    if (!AnimAsset)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Animation asset not found: %s"), *AnimAssetPath));
+
+    Database->Modify();
+
+    // Access DatabaseAnimationAssets via reflection
+    FArrayProperty* ArrayProp = CastField<FArrayProperty>(Database->GetClass()->FindPropertyByName(TEXT("DatabaseAnimationAssets")));
+    if (!ArrayProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("DatabaseAnimationAssets property not found"));
+
+    FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Database));
+    int32 NewIndex = ArrayHelper.AddValue();
+    void* ElemPtr = ArrayHelper.GetRawPtr(NewIndex);
+
+    const FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner);
+    if (InnerStruct && InnerStruct->Struct)
+    {
+        const UStruct* S = InnerStruct->Struct;
+
+        // Set AnimAsset
+        if (FObjectProperty* AnimProp = CastField<FObjectProperty>(S->FindPropertyByName(TEXT("AnimAsset"))))
+        {
+            AnimProp->SetObjectPropertyValue(AnimProp->ContainerPtrToValuePtr<void>(ElemPtr), AnimAsset);
+        }
+
+#if WITH_EDITORONLY_DATA
+        // Set bEnabled (default true)
+        bool bEnabled = true;
+        Params->TryGetBoolField(TEXT("enabled"), bEnabled);
+        if (FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bEnabled"))))
+        {
+            Prop->SetPropertyValue_InContainer(ElemPtr, bEnabled);
+        }
+
+        // Set SamplingRange
+        double RangeMin = 0.0, RangeMax = 0.0;
+        if (Params->TryGetNumberField(TEXT("sampling_range_min"), RangeMin) || Params->TryGetNumberField(TEXT("sampling_range_max"), RangeMax))
+        {
+            if (FStructProperty* RangeProp = CastField<FStructProperty>(S->FindPropertyByName(TEXT("SamplingRange"))))
+            {
+                FFloatInterval* Interval = RangeProp->ContainerPtrToValuePtr<FFloatInterval>(ElemPtr);
+                if (Interval)
+                {
+                    Interval->Min = (float)RangeMin;
+                    Interval->Max = (float)RangeMax;
+                }
+            }
+        }
+#endif
+    }
+
+    Database->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("new_index"), NewIndex);
+    Result->SetStringField(TEXT("anim_asset_path"), AnimAsset->GetPathName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double IndexD = -1;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("index"), IndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+    int32 Index = (int32)IndexD;
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase not found"));
+
+    FArrayProperty* ArrayProp = CastField<FArrayProperty>(Database->GetClass()->FindPropertyByName(TEXT("DatabaseAnimationAssets")));
+    if (!ArrayProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("DatabaseAnimationAssets property not found"));
+
+    FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Database));
+    if (Index < 0 || Index >= ArrayHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Index %d out of range (0..%d)"), Index, ArrayHelper.Num() - 1));
+
+    Database->Modify();
+    ArrayHelper.RemoveValues(Index, 1);
+    Database->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("removed_index"), Index);
+    return Result;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PSS Write Tools
+// ══════════════════════════════════════════════════════════════════════
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaSettings(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    Schema->Modify();
+
+    // Sample rate
+    double SampleRate = 0;
+    if (Params->TryGetNumberField(TEXT("sample_rate"), SampleRate))
+    {
+        Schema->SampleRate = FMath::Clamp((int32)SampleRate, 1, 240);
+    }
+
+    // Skeleton
+    FString SkeletonPath;
+    if (Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+        if (!Skeleton)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton not found: %s"), *SkeletonPath));
+        }
+
+        // Access Skeletons array via reflection
+        FArrayProperty* SkArrayProp = CastField<FArrayProperty>(Schema->GetClass()->FindPropertyByName(TEXT("Skeletons")));
+        if (SkArrayProp)
+        {
+            FScriptArrayHelper ArrayHelper(SkArrayProp, SkArrayProp->ContainerPtrToValuePtr<void>(Schema));
+            const FStructProperty* InnerStruct = CastField<FStructProperty>(SkArrayProp->Inner);
+
+            // If array is empty, add one element; otherwise set first element
+            if (ArrayHelper.Num() == 0)
+            {
+                ArrayHelper.AddValue();
+            }
+            void* ElemPtr = ArrayHelper.GetRawPtr(0);
+
+            if (InnerStruct && InnerStruct->Struct)
+            {
+                if (FObjectProperty* SkProp = CastField<FObjectProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Skeleton"))))
+                {
+                    SkProp->SetObjectPropertyValue(SkProp->ContainerPtrToValuePtr<void>(ElemPtr), Skeleton);
+                }
+
+                // Role
+                FString Role;
+                if (Params->TryGetStringField(TEXT("role"), Role))
+                {
+                    if (FNameProperty* RoleProp = CastField<FNameProperty>(InnerStruct->Struct->FindPropertyByName(TEXT("Role"))))
+                    {
+                        RoleProp->SetPropertyValue(RoleProp->ContainerPtrToValuePtr<void>(ElemPtr), FName(*Role));
+                    }
+                }
+            }
+        }
+    }
+
+    Schema->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("sample_rate"), Schema->SampleRate);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddPoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ChannelType;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetStringField(TEXT("channel_type"), ChannelType))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'channel_type'"));
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    Schema->Modify();
+
+    // Create the channel object based on type
+    UPoseSearchFeatureChannel* NewChannel = nullptr;
+
+    if (ChannelType == TEXT("Trajectory"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Trajectory>(Schema);
+
+        // Parse samples array
+        const TArray<TSharedPtr<FJsonValue>>* SamplesArr = nullptr;
+        if (Params->TryGetArrayField(TEXT("samples"), SamplesArr))
+        {
+            Ch->Samples.Empty();
+            for (const TSharedPtr<FJsonValue>& SampleVal : *SamplesArr)
+            {
+                const TSharedPtr<FJsonObject>* SampleObj = nullptr;
+                if (SampleVal->TryGetObject(SampleObj))
+                {
+                    FPoseSearchTrajectorySample Sample;
+                    double Offset = 0, Flags = 0;
+                    (*SampleObj)->TryGetNumberField(TEXT("offset"), Offset);
+                    (*SampleObj)->TryGetNumberField(TEXT("flags"), Flags);
+                    Sample.Offset = (float)Offset;
+                    Sample.Flags = (int32)Flags;
+#if WITH_EDITORONLY_DATA
+                    double Weight = 1.0;
+                    (*SampleObj)->TryGetNumberField(TEXT("weight"), Weight);
+                    Sample.Weight = (float)Weight;
+#endif
+                    Ch->Samples.Add(Sample);
+                }
+            }
+        }
+
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else if (ChannelType == TEXT("Pose"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Pose>(Schema);
+
+        // Parse sampled_bones array
+        const TArray<TSharedPtr<FJsonValue>>* BonesArr = nullptr;
+        if (Params->TryGetArrayField(TEXT("sampled_bones"), BonesArr))
+        {
+            Ch->SampledBones.Empty();
+            for (const TSharedPtr<FJsonValue>& BoneVal : *BonesArr)
+            {
+                const TSharedPtr<FJsonObject>* BoneObj = nullptr;
+                if (BoneVal->TryGetObject(BoneObj))
+                {
+                    FPoseSearchBone Bone;
+                    FString BoneName;
+                    if ((*BoneObj)->TryGetStringField(TEXT("bone_name"), BoneName))
+                    {
+                        Bone.Reference.BoneName = FName(*BoneName);
+                    }
+                    double Flags = (double)(int32)EPoseSearchBoneFlags::Position;
+                    (*BoneObj)->TryGetNumberField(TEXT("flags"), Flags);
+                    Bone.Flags = (int32)Flags;
+#if WITH_EDITORONLY_DATA
+                    double Weight = 1.0;
+                    (*BoneObj)->TryGetNumberField(TEXT("weight"), Weight);
+                    Bone.Weight = (float)Weight;
+#endif
+                    Ch->SampledBones.Add(Bone);
+                }
+            }
+        }
+
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else if (ChannelType == TEXT("Position"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Position>(Schema);
+        FString BoneName;
+        if (Params->TryGetStringField(TEXT("bone_name"), BoneName))
+        {
+            Ch->Bone.BoneName = FName(*BoneName);
+        }
+        double TimeOffset = 0;
+        if (Params->TryGetNumberField(TEXT("sample_time_offset"), TimeOffset))
+        {
+            Ch->SampleTimeOffset = (float)TimeOffset;
+        }
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else if (ChannelType == TEXT("Velocity"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Velocity>(Schema);
+        FString BoneName;
+        if (Params->TryGetStringField(TEXT("bone_name"), BoneName))
+        {
+            Ch->Bone.BoneName = FName(*BoneName);
+        }
+        double TimeOffset = 0;
+        if (Params->TryGetNumberField(TEXT("sample_time_offset"), TimeOffset))
+        {
+            Ch->SampleTimeOffset = (float)TimeOffset;
+        }
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else if (ChannelType == TEXT("Heading"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Heading>(Schema);
+        FString BoneName;
+        if (Params->TryGetStringField(TEXT("bone_name"), BoneName))
+        {
+            Ch->Bone.BoneName = FName(*BoneName);
+        }
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else if (ChannelType == TEXT("Curve"))
+    {
+        auto* Ch = NewObject<UPoseSearchFeatureChannel_Curve>(Schema);
+        FString CurveName;
+        if (Params->TryGetStringField(TEXT("curve_name"), CurveName))
+        {
+            Ch->CurveName = FName(*CurveName);
+        }
+#if WITH_EDITORONLY_DATA
+        double Weight = 1.0;
+        if (Params->TryGetNumberField(TEXT("weight"), Weight))
+        {
+            Ch->Weight = (float)Weight;
+        }
+#endif
+        NewChannel = Ch;
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Unknown channel_type '%s'. Supported: Trajectory, Pose, Position, Velocity, Heading, Curve"), *ChannelType));
+    }
+
+    // Add to Channels array via reflection
+    FArrayProperty* ChannelsProp = CastField<FArrayProperty>(Schema->GetClass()->FindPropertyByName(TEXT("Channels")));
+    if (!ChannelsProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channels property not found"));
+
+    FScriptArrayHelper ArrayHelper(ChannelsProp, ChannelsProp->ContainerPtrToValuePtr<void>(Schema));
+    int32 NewIndex = ArrayHelper.AddValue();
+    FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ChannelsProp->Inner);
+    if (InnerObjProp)
+    {
+        InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(NewIndex), NewChannel);
+    }
+
+    Schema->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("new_index"), NewIndex);
+    Result->SetStringField(TEXT("channel_class"), NewChannel->GetClass()->GetName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double IndexD = -1;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("index"), IndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+    int32 Index = (int32)IndexD;
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    FArrayProperty* ChannelsProp = CastField<FArrayProperty>(Schema->GetClass()->FindPropertyByName(TEXT("Channels")));
+    if (!ChannelsProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channels property not found"));
+
+    FScriptArrayHelper ArrayHelper(ChannelsProp, ChannelsProp->ContainerPtrToValuePtr<void>(Schema));
+    if (Index < 0 || Index >= ArrayHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Index %d out of range (0..%d)"), Index, ArrayHelper.Num() - 1));
+
+    Schema->Modify();
+    ArrayHelper.RemoveValues(Index, 1);
+    Schema->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("removed_index"), Index);
+    return Result;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Chooser Table Write Tools
+// ══════════════════════════════════════════════════════════════════════
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableRow(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ResultAssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetStringField(TEXT("result_asset_path"), ResultAssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'result_asset_path'"));
+
+    UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
+    if (!Table)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("ChooserTable not found"));
+
+    UObject* ResultAsset = LoadObject<UObject>(nullptr, *ResultAssetPath);
+    if (!ResultAsset)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Result asset not found: %s"), *ResultAssetPath));
+
+    Table->Modify();
+
+    // Add result entry
+#if WITH_EDITORONLY_DATA
+    FInstancedStruct NewResult;
+    NewResult.InitializeAs<FAssetChooser>();
+    FAssetChooser& AssetResult = NewResult.GetMutable<FAssetChooser>();
+    AssetResult.Asset = ResultAsset;
+    Table->ResultsStructs.Add(MoveTemp(NewResult));
+    int32 NewRowIndex = Table->ResultsStructs.Num() - 1;
+#else
+    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Cannot add rows outside of editor"));
+#endif
+
+    // Add default row values to each column
+    const TArray<TSharedPtr<FJsonValue>>* ColumnValues = nullptr;
+    Params->TryGetArrayField(TEXT("column_values"), ColumnValues);
+
+    for (int32 ColIdx = 0; ColIdx < Table->ColumnsStructs.Num(); ++ColIdx)
+    {
+        FInstancedStruct& ColInst = Table->ColumnsStructs[ColIdx];
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+        if (!ColStruct || !ColInst.IsValid()) continue;
+
+        // Get the column value for this column from params (if provided)
+        FString ColValue;
+        if (ColumnValues && ColumnValues->IsValidIndex(ColIdx))
+        {
+            (*ColumnValues)[ColIdx]->TryGetString(ColValue);
+        }
+
+        if (ColStruct == FEnumColumn::StaticStruct())
+        {
+            FEnumColumn& EnumCol = ColInst.GetMutable<FEnumColumn>();
+            FChooserEnumRowData RowData;
+            if (!ColValue.IsEmpty())
+            {
+                // Look up enum value by name
+                const UEnum* Enum = EnumCol.GetEnum();
+                if (Enum)
+                {
+                    int64 EnumValue = Enum->GetValueByNameString(ColValue);
+                    if (EnumValue != INDEX_NONE)
+                    {
+                        RowData.Value = (uint8)EnumValue;
+                        RowData.Comparison = EEnumColumnCellValueComparison::MatchEqual;
+#if WITH_EDITORONLY_DATA
+                        RowData.ValueName = FName(*ColValue);
+#endif
+                    }
+                    else
+                    {
+                        RowData.Comparison = EEnumColumnCellValueComparison::MatchAny;
+                    }
+                }
+                else
+                {
+                    RowData.Comparison = EEnumColumnCellValueComparison::MatchAny;
+                }
+            }
+            else
+            {
+                RowData.Comparison = EEnumColumnCellValueComparison::MatchAny;
+            }
+            EnumCol.RowValues.Add(RowData);
+        }
+        else if (ColStruct == FBoolColumn::StaticStruct())
+        {
+            FBoolColumn& BoolCol = ColInst.GetMutable<FBoolColumn>();
+            if (ColValue == TEXT("true"))
+            {
+                BoolCol.RowValuesWithAny.Add(EBoolColumnCellValue::MatchTrue);
+            }
+            else if (ColValue == TEXT("false"))
+            {
+                BoolCol.RowValuesWithAny.Add(EBoolColumnCellValue::MatchFalse);
+            }
+            else
+            {
+                BoolCol.RowValuesWithAny.Add(EBoolColumnCellValue::MatchAny);
+            }
+        }
+        else
+        {
+            // For unsupported column types, use reflection to add a default value
+            // to the RowValues array via RowValuesPropertyName
+#if WITH_EDITOR
+            FChooserColumnBase& ColBase = ColInst.GetMutable<FChooserColumnBase>();
+            FName RowPropName = ColBase.RowValuesPropertyName();
+            if (FProperty* RowProp = ColStruct->FindPropertyByName(RowPropName))
+            {
+                if (FArrayProperty* RowArrayProp = CastField<FArrayProperty>(RowProp))
+                {
+                    FScriptArrayHelper RowHelper(RowArrayProp, RowArrayProp->ContainerPtrToValuePtr<void>(&ColBase));
+                    RowHelper.AddValue();
+                }
+            }
+#endif
+        }
+    }
+
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("new_row_index"), NewRowIndex);
+    Result->SetStringField(TEXT("result_asset"), ResultAsset->GetPathName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableRow(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double IndexD = -1;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("row_index"), IndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'row_index'"));
+
+    int32 RowIndex = (int32)IndexD;
+
+    UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
+    if (!Table)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("ChooserTable not found"));
+
+#if WITH_EDITORONLY_DATA
+    if (RowIndex < 0 || RowIndex >= Table->ResultsStructs.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Row index %d out of range (0..%d)"), RowIndex, Table->ResultsStructs.Num() - 1));
+
+    Table->Modify();
+
+    // Remove result entry
+    Table->ResultsStructs.RemoveAt(RowIndex);
+
+    // Remove corresponding row values from each column
+    for (int32 ColIdx = 0; ColIdx < Table->ColumnsStructs.Num(); ++ColIdx)
+    {
+        FInstancedStruct& ColInst = Table->ColumnsStructs[ColIdx];
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+        if (!ColStruct || !ColInst.IsValid()) continue;
+
+        if (ColStruct == FEnumColumn::StaticStruct())
+        {
+            FEnumColumn& EnumCol = ColInst.GetMutable<FEnumColumn>();
+            if (EnumCol.RowValues.IsValidIndex(RowIndex))
+                EnumCol.RowValues.RemoveAt(RowIndex);
+        }
+        else if (ColStruct == FBoolColumn::StaticStruct())
+        {
+            FBoolColumn& BoolCol = ColInst.GetMutable<FBoolColumn>();
+            if (BoolCol.RowValuesWithAny.IsValidIndex(RowIndex))
+                BoolCol.RowValuesWithAny.RemoveAt(RowIndex);
+        }
+        else
+        {
+#if WITH_EDITOR
+            FChooserColumnBase& ColBase = ColInst.GetMutable<FChooserColumnBase>();
+            FName RowPropName = ColBase.RowValuesPropertyName();
+            if (FProperty* RowProp = ColStruct->FindPropertyByName(RowPropName))
+            {
+                if (FArrayProperty* RowArrayProp = CastField<FArrayProperty>(RowProp))
+                {
+                    FScriptArrayHelper RowHelper(RowArrayProp, RowArrayProp->ContainerPtrToValuePtr<void>(&ColBase));
+                    if (RowIndex < RowHelper.Num())
+                        RowHelper.RemoveValues(RowIndex, 1);
+                }
+            }
+#endif
+        }
+    }
+
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("removed_row_index"), RowIndex);
+    return Result;
+#else
+    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Cannot remove rows outside of editor"));
+#endif
 }

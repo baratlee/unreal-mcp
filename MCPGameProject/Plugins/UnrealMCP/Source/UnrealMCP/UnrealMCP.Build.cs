@@ -69,7 +69,8 @@ public class UnrealMCP : ModuleRules
 					"Chooser",             // For UChooserTable read-only inspection
 					"IKRig",               // For UIKRigDefinition / UIKRetargeter read-only inspection
 					"AnimGraph",           // For State Machine editor classes (UAnimStateNode, UAnimStateTransitionNode, etc.)
-					"EnhancedInput"        // For UInputAction / UInputMappingContext read-only inspection
+					"EnhancedInput",       // For UInputAction / UInputMappingContext read-only inspection
+					"PoseSearch"           // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
 				}
 			);
 		}

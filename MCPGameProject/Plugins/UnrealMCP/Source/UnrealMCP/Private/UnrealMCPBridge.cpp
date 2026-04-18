@@ -341,7 +341,17 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("list_ik_retargeters") ||
                      CommandType == TEXT("get_ik_retargeter_info") ||
                      CommandType == TEXT("get_input_action_info") ||
-                     CommandType == TEXT("get_input_mapping_context_info"))
+                     CommandType == TEXT("get_input_mapping_context_info") ||
+                     CommandType == TEXT("get_pose_search_database_info") ||
+                     CommandType == TEXT("get_pose_search_schema_info") ||
+                     CommandType == TEXT("set_pose_search_database_schema") ||
+                     CommandType == TEXT("add_pose_search_database_animation") ||
+                     CommandType == TEXT("remove_pose_search_database_animation") ||
+                     CommandType == TEXT("set_pose_search_schema_settings") ||
+                     CommandType == TEXT("add_pose_search_schema_channel") ||
+                     CommandType == TEXT("remove_pose_search_schema_channel") ||
+                     CommandType == TEXT("add_chooser_table_row") ||
+                     CommandType == TEXT("remove_chooser_table_row"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

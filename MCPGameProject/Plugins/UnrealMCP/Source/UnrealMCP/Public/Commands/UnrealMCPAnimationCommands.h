@@ -33,4 +33,20 @@ private:
     // Enhanced Input asset readers
     TSharedPtr<FJsonObject> HandleGetInputActionInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetInputMappingContextInfo(const TSharedPtr<FJsonObject>& Params);
+
+    // Pose Search asset readers
+    TSharedPtr<FJsonObject> HandleGetPoseSearchDatabaseInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetPoseSearchSchemaInfo(const TSharedPtr<FJsonObject>& Params);
+
+    // Pose Search write tools
+    TSharedPtr<FJsonObject> HandleSetPoseSearchDatabaseSchema(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddPoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemovePoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetPoseSearchSchemaSettings(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddPoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemovePoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params);
+
+    // Chooser Table write tools
+    TSharedPtr<FJsonObject> HandleAddChooserTableRow(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveChooserTableRow(const TSharedPtr<FJsonObject>& Params);
 };

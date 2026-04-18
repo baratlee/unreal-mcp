@@ -734,4 +734,298 @@ def register_animation_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def get_pose_search_database_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read the structure of a PoseSearchDatabase asset (read-only).
+
+        Returns schema reference, animation asset entries (with path, class,
+        enabled state, mirror option, sampling range), tags, cost biases,
+        and search mode.
+
+        Args:
+            asset_path: PoseSearchDatabase object path, e.g.
+                "/Game/.../PSD_Locomotion.PSD_Locomotion"
+
+        Returns:
+            Dict with asset_path, schema, tag_count, tags,
+            continuing_pose_cost_bias, base_cost_bias, looping_cost_bias,
+            pose_search_mode, animation_asset_count, animation_assets[].
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("get_pose_search_database_info", {"asset_path": asset_path})
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting pose search database info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_pose_search_schema_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read the structure of a PoseSearchSchema asset (read-only).
+
+        Returns sample rate, skeleton references, data preprocessor setting,
+        and the full channel hierarchy (recursively serialized with sub-channels).
+
+        Each channel entry includes: channel_class (e.g. "PoseSearchFeatureChannel_Trajectory"),
+        weight, bone_name (if applicable), sample_time_offset, and type-specific fields.
+        Trajectory channels include their samples array (offset, flags, weight).
+        Pose channels include their sampled_bones array (bone_name, flags, weight).
+
+        Args:
+            asset_path: PoseSearchSchema object path, e.g.
+                "/Game/.../PSS_Locomotion.PSS_Locomotion"
+
+        Returns:
+            Dict with asset_path, sample_rate, schema_cardinality,
+            data_preprocessor, skeleton_count, skeletons[],
+            channel_count, channels[] (recursive).
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("get_pose_search_schema_info", {"asset_path": asset_path})
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting pose search schema info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    # ── PSD Write Tools ──
+
+    @mcp.tool()
+    def set_pose_search_database_schema(ctx: Context, asset_path: str, schema_path: str) -> Dict[str, Any]:
+        """Set the Schema reference on a PoseSearchDatabase.
+
+        Args:
+            asset_path: PSD object path
+            schema_path: PSS object path to assign
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_pose_search_database_schema", {
+                "asset_path": asset_path, "schema_path": schema_path
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_pose_search_database_animation(
+        ctx: Context, asset_path: str, anim_asset_path: str,
+        enabled: bool = True,
+        sampling_range_min: float = 0.0, sampling_range_max: float = 0.0
+    ) -> Dict[str, Any]:
+        """Add an animation asset entry to a PoseSearchDatabase.
+
+        Args:
+            asset_path: PSD object path
+            anim_asset_path: AnimSequence/BlendSpace object path to add
+            enabled: Whether this entry is enabled (default True)
+            sampling_range_min: Start of sampling range in seconds (0 = from beginning)
+            sampling_range_max: End of sampling range in seconds (0 = to end)
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path, "anim_asset_path": anim_asset_path, "enabled": enabled}
+            if sampling_range_min != 0.0 or sampling_range_max != 0.0:
+                params["sampling_range_min"] = sampling_range_min
+                params["sampling_range_max"] = sampling_range_max
+            response = unreal.send_command("add_pose_search_database_animation", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_pose_search_database_animation(ctx: Context, asset_path: str, index: int) -> Dict[str, Any]:
+        """Remove an animation asset entry from a PoseSearchDatabase by index.
+
+        Args:
+            asset_path: PSD object path
+            index: Index of the animation entry to remove
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("remove_pose_search_database_animation", {
+                "asset_path": asset_path, "index": index
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    # ── PSS Write Tools ──
+
+    @mcp.tool()
+    def set_pose_search_schema_settings(
+        ctx: Context, asset_path: str,
+        sample_rate: int = 0, skeleton_path: str = "", role: str = ""
+    ) -> Dict[str, Any]:
+        """Set settings on a PoseSearchSchema (sample rate, skeleton).
+
+        Args:
+            asset_path: PSS object path
+            sample_rate: Sampling rate (1-240). Pass 0 to leave unchanged.
+            skeleton_path: Skeleton object path. Empty to leave unchanged.
+            role: Role name for the skeleton (e.g. "Default"). Empty for default.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path}
+            if sample_rate > 0:
+                params["sample_rate"] = sample_rate
+            if skeleton_path:
+                params["skeleton_path"] = skeleton_path
+            if role:
+                params["role"] = role
+            response = unreal.send_command("set_pose_search_schema_settings", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_pose_search_schema_channel(
+        ctx: Context, asset_path: str, channel_type: str,
+        weight: float = 1.0,
+        bone_name: str = "", curve_name: str = "",
+        sample_time_offset: float = 0.0,
+        samples: list = None, sampled_bones: list = None
+    ) -> Dict[str, Any]:
+        """Add a feature channel to a PoseSearchSchema.
+
+        Supported channel_type values:
+        - "Trajectory": trajectory prediction channel. Pass `samples` as list of
+          {"offset": float, "flags": int, "weight": float}.
+          Flags bitmask: Position=2, Velocity=1, VelocityDirection=4,
+          FacingDirection=8, PositionXY=32, VelocityXY=16.
+        - "Pose": bone pose channel. Pass `sampled_bones` as list of
+          {"bone_name": str, "flags": int, "weight": float}.
+          Flags bitmask: Velocity=1, Position=2, Rotation=4, Phase=8.
+        - "Position": single bone position. Pass `bone_name`.
+        - "Velocity": single bone velocity. Pass `bone_name`.
+        - "Heading": bone heading direction. Pass `bone_name`.
+        - "Curve": animation curve value. Pass `curve_name`.
+
+        Args:
+            asset_path: PSS object path
+            channel_type: One of Trajectory, Pose, Position, Velocity, Heading, Curve
+            weight: Channel weight (default 1.0)
+            bone_name: Bone name (for Position/Velocity/Heading)
+            curve_name: Curve name (for Curve channel)
+            sample_time_offset: Time offset in seconds (for Position/Velocity)
+            samples: Trajectory samples list (for Trajectory channel)
+            sampled_bones: Sampled bones list (for Pose channel)
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path, "channel_type": channel_type, "weight": weight}
+            if bone_name:
+                params["bone_name"] = bone_name
+            if curve_name:
+                params["curve_name"] = curve_name
+            if sample_time_offset != 0.0:
+                params["sample_time_offset"] = sample_time_offset
+            if samples is not None:
+                params["samples"] = samples
+            if sampled_bones is not None:
+                params["sampled_bones"] = sampled_bones
+            response = unreal.send_command("add_pose_search_schema_channel", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_pose_search_schema_channel(ctx: Context, asset_path: str, index: int) -> Dict[str, Any]:
+        """Remove a feature channel from a PoseSearchSchema by index.
+
+        Args:
+            asset_path: PSS object path
+            index: Index of the channel to remove
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("remove_pose_search_schema_channel", {
+                "asset_path": asset_path, "index": index
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    # ── Chooser Table Write Tools ──
+
+    @mcp.tool()
+    def add_chooser_table_row(
+        ctx: Context, asset_path: str, result_asset_path: str,
+        column_values: list = None
+    ) -> Dict[str, Any]:
+        """Add a row to a ChooserTable with an asset result.
+
+        Column values are matched by position to the table's columns.
+        For Enum columns, pass the enum value name as a string.
+        For Bool columns, pass "true", "false", or empty for MatchAny.
+        Omitted or empty values default to MatchAny.
+
+        Args:
+            asset_path: ChooserTable object path
+            result_asset_path: Asset to return when this row matches
+            column_values: List of string values, one per column (positional).
+                Example: ["Walk", "", "true"] for a 3-column table.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path, "result_asset_path": result_asset_path}
+            if column_values is not None:
+                params["column_values"] = column_values
+            response = unreal.send_command("add_chooser_table_row", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_chooser_table_row(ctx: Context, asset_path: str, row_index: int) -> Dict[str, Any]:
+        """Remove a row from a ChooserTable by index.
+
+        Removes both the result entry and the corresponding values from all columns.
+
+        Args:
+            asset_path: ChooserTable object path
+            row_index: Index of the row to remove
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("remove_chooser_table_row", {
+                "asset_path": asset_path, "row_index": row_index
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Animation tools registered successfully")
