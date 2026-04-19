@@ -34,6 +34,9 @@
 #include "AnimStateEntryNode.h"
 #include "AnimationTransitionGraph.h"
 #include "AnimGraphNode_TransitionResult.h"
+// AnimGraph node reflection (for method-A: anim_node_properties / property_bindings dump)
+#include "AnimGraphNode_Base.h"
+#include "JsonObjectConverter.h"
 
 namespace
 {
@@ -63,6 +66,115 @@ namespace
     // Threshold and preview length used by Summary mode.
     constexpr int32 GPinSummaryThreshold = 256;
     constexpr int32 GPinSummaryPreviewLen = 96;
+
+    // Method A: serialize the two Details-panel-only dimensions of AnimGraph
+    // nodes that would otherwise be invisible to callers:
+    //   1. anim_node_properties — EditAnywhere UPROPERTY on the inner
+    //      FAnimNode_* struct (e.g. TwoWayBlend's AlphaInputType / bEnabled /
+    //      AlwaysUpdateChildren). These render in the Details panel but have
+    //      no dedicated pin in most configurations.
+    //   2. property_bindings   — entries in UAnimGraphNodeBinding_Base's
+    //      PropertyBindings TMap (UE 5.x: the old per-node PropertyBindings_DEPRECATED
+    //      map was moved onto the Instanced `Binding` sub-object).
+    //
+    // We reach both via reflection rather than hard-coded casts, so this works
+    // for every UAnimGraphNode_* subclass regardless of its inner-node field
+    // name (some use "Node", TwoWayBlend uses "BlendNode", etc.).
+    //
+    // Both payloads are skipped entirely in NamesOnly mode to keep that mode
+    // maximally lightweight.
+    void SerializeAnimGraphNodeExtras(
+        UAnimGraphNode_Base* AnimNode,
+        TSharedPtr<FJsonObject> NodeObj,
+        EPinPayloadMode Mode)
+    {
+        if (!AnimNode || !NodeObj.IsValid() || Mode == EPinPayloadMode::NamesOnly)
+        {
+            return;
+        }
+
+        // (1) Inner FAnimNode_* — find the first FStructProperty on this UClass
+        // whose UScriptStruct name starts with "AnimNode_". Per UE convention
+        // each UAnimGraphNode_* has exactly one such member.
+        for (TFieldIterator<FStructProperty> PropIt(AnimNode->GetClass()); PropIt; ++PropIt)
+        {
+            FStructProperty* StructProp = *PropIt;
+            if (!StructProp || !StructProp->Struct) continue;
+
+            const FString StructName = StructProp->Struct->GetName();
+            if (!StructName.StartsWith(TEXT("AnimNode_"))) continue;
+
+            const void* StructData = StructProp->ContainerPtrToValuePtr<void>(AnimNode);
+            TSharedRef<FJsonObject> InnerObj = MakeShared<FJsonObject>();
+
+            // CheckFlags=CPF_Edit  → only include properties that are EditAnywhere / EditDefaultsOnly / EditInstanceOnly
+            //                        (what a user sees in the Details panel)
+            // SkipFlags=CPF_Transient | CPF_DuplicateTransient → drop runtime scratch
+            FJsonObjectConverter::UStructToJsonObject(
+                StructProp->Struct,
+                StructData,
+                InnerObj,
+                /*CheckFlags=*/CPF_Edit,
+                /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
+
+            NodeObj->SetObjectField(TEXT("anim_node_properties"), InnerObj);
+            NodeObj->SetStringField(TEXT("anim_node_struct"), StructName);
+            break;
+        }
+
+        // (2) PropertyBindings — walk UAnimGraphNode_Base::Binding (which is
+        // a UAnimGraphNodeBinding_Base instance whose private header we do not
+        // want to include) and reflect its "PropertyBindings" TMap.
+        FProperty* BindingMemberProp = AnimNode->GetClass()->FindPropertyByName(TEXT("Binding"));
+        FObjectProperty* BindingObjProp = CastField<FObjectProperty>(BindingMemberProp);
+        if (!BindingObjProp) return;
+
+        UObject* BindingObj = BindingObjProp->GetObjectPropertyValue(
+            BindingObjProp->ContainerPtrToValuePtr<void>(AnimNode));
+        if (!BindingObj) return;
+
+        FProperty* PropertyBindingsProp = BindingObj->GetClass()->FindPropertyByName(TEXT("PropertyBindings"));
+        FMapProperty* MapProp = CastField<FMapProperty>(PropertyBindingsProp);
+        if (!MapProp) return;
+
+        void* MapContainer = MapProp->ContainerPtrToValuePtr<void>(BindingObj);
+        FScriptMapHelper MapHelper(MapProp, MapContainer);
+
+        UScriptStruct* BindingStructDef = FAnimGraphNodePropertyBinding::StaticStruct();
+        TArray<TSharedPtr<FJsonValue>> BindingsArray;
+
+        // GetMaxIndex + IsValidIndex is the version-stable way to iterate
+        // FScriptMap; FIterator exists on 5.7 but adds nothing for this use.
+        for (int32 It = 0; It < MapHelper.GetMaxIndex(); ++It)
+        {
+            if (!MapHelper.IsValidIndex(It)) continue;
+
+            const void* KeyRaw = MapHelper.GetKeyPtr(It);
+            const void* ValRaw = MapHelper.GetValuePtr(It);
+            if (!KeyRaw || !ValRaw) continue;
+
+            const FName BindingKey = *reinterpret_cast<const FName*>(KeyRaw);
+
+            TSharedRef<FJsonObject> BObj = MakeShared<FJsonObject>();
+            BObj->SetStringField(TEXT("property_name"), BindingKey.ToString());
+
+            if (BindingStructDef)
+            {
+                TSharedRef<FJsonObject> BDetail = MakeShared<FJsonObject>();
+                FJsonObjectConverter::UStructToJsonObject(
+                    BindingStructDef,
+                    ValRaw,
+                    BDetail,
+                    /*CheckFlags=*/0,                // FAnimGraphNodePropertyBinding fields aren't EditAnywhere, they're UPROPERTY()
+                    /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
+                BObj->SetObjectField(TEXT("detail"), BDetail);
+            }
+
+            BindingsArray.Add(MakeShared<FJsonValueObject>(BObj));
+        }
+
+        NodeObj->SetArrayField(TEXT("property_bindings"), BindingsArray);
+    }
 
     // Serialize a single UEdGraphNode (and its pin links) to a JSON object.
     // Shared between HandleGetBlueprintInfo and HandleGetBlueprintFunctionGraph
@@ -165,6 +277,14 @@ namespace
             PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
         }
         NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+        // Method A: AnimGraph-only Details-panel + PropertyBindings dump.
+        // Non-AnimGraph nodes (K2Node_* in EventGraph / user functions) just
+        // fall through the Cast and get no extra fields.
+        if (UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node))
+        {
+            SerializeAnimGraphNodeExtras(AnimNode, NodeObj, Mode);
+        }
 
         return NodeObj;
     }

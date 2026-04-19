@@ -493,6 +493,25 @@ def register_blueprint_tools(mcp: FastMCP):
             Dict with blueprint_path, function_name, graph_class, node_count,
             and a `nodes` array. Each node has the same shape as nodes returned
             inside `event_graphs` from `get_blueprint_info`.
+
+            AnimGraph nodes (UAnimGraphNode_* subclasses) additionally carry
+            two Details-panel-only fields beyond the standard pin array:
+              - "anim_node_struct"       : name of the inner FAnimNode_* struct
+                                           (e.g. "AnimNode_TwoWayBlend")
+              - "anim_node_properties"   : JSON object of every EditAnywhere
+                                           UPROPERTY on that struct (e.g. for
+                                           TwoWayBlend: AlphaInputType,
+                                           bAlphaBoolEnabled, bAlwaysUpdateChildren,
+                                           bResetChildOnActivation, Alpha, etc.)
+              - "property_bindings"      : array of Details-panel Property
+                                           Bindings (the menu behind the small
+                                           binding button next to a pin). Each
+                                           entry has { property_name, detail:
+                                           { PathAsText, PropertyPath[], Type,
+                                           bIsBound, bIsPromotion, PinType, ... } }
+            Both are omitted when pin_payload_mode="names_only". Non-AnimGraph
+            nodes (K2Node_* in EventGraph / user functions) never carry these
+            fields.
         """
         from unreal_mcp_server import get_unreal_connection
 
