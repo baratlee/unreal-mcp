@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 63 tools total, organized by category.
+> 64 tools total, organized by category.
 
 ---
 
@@ -63,7 +63,7 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (9)
+## Animation Tools (10)
 
 | Tool | Description |
 |---|---|
@@ -75,6 +75,7 @@
 | `find_animations_for_skeleton` | 通过 Asset Registry 按 Skeleton 反查所有关联的 AnimSequence/AnimMontage |
 | `get_skeleton_bone_hierarchy` | 获取 USkeleton 的完整骨骼层级（含虚拟骨骼） |
 | `get_skeleton_retarget_modes` | 获取 USkeleton 每根骨骼的 TranslationRetargetingMode |
+| `set_animation_properties` | 设置 AnimSequence 的 Root Motion 属性（enable/root_lock/force_lock/normalized_scale） |
 | `list_chooser_tables` | 通过 Asset Registry 列出项目中所有 UChooserTable 资产 |
 
 ## Chooser Table Tools (3)
@@ -92,7 +93,7 @@
 | `list_ik_rigs` | 通过 Asset Registry 列出项目中所有 UIKRigDefinition 资产 |
 | `get_ik_rig_info` | 读取 IKRig 的静态结构（骨骼链、Solver、Goal） |
 | `list_ik_retargeters` | 通过 Asset Registry 列出项目中所有 UIKRetargeter 资产 |
-| `get_ik_retargeter_info` | 读取 IKRetargeter 的静态结构（源/目标 IKRig、链映射） |
+| `get_ik_retargeter_info` | 读取 IKRetargeter 的静态结构（源/目标 IKRig、Op 栈含 chain_pairs + per-chain settings） |
 
 ## State Machine Tools (3)
 

@@ -353,7 +353,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_pose_search_schema_channel") ||
                      CommandType == TEXT("remove_pose_search_schema_channel") ||
                      CommandType == TEXT("add_chooser_table_row") ||
-                     CommandType == TEXT("remove_chooser_table_row"))
+                     CommandType == TEXT("remove_chooser_table_row") ||
+                     CommandType == TEXT("set_animation_properties"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

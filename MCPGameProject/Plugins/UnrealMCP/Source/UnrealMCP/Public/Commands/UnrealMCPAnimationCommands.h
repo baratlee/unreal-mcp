@@ -49,4 +49,7 @@ private:
     // Chooser Table write tools
     TSharedPtr<FJsonObject> HandleAddChooserTableRow(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleRemoveChooserTableRow(const TSharedPtr<FJsonObject>& Params);
+
+    // Animation write tools
+    TSharedPtr<FJsonObject> HandleSetAnimationProperties(const TSharedPtr<FJsonObject>& Params);
 };

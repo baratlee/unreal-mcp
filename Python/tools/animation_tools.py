@@ -576,9 +576,14 @@ def register_animation_tools(mcp: FastMCP):
         - current source/target retarget pose names
         - source_retarget_poses / target_retarget_poses lists, each entry has
           `name` and `bone_offset_count` (size of FIKRetargetPose.BoneRotationOffsets)
-        - retarget_ops list — each entry exposes the op's UScriptStruct name only
-          (e.g. `IKRetargetFKChainsOp`, `IKRetargetIKChainsOp`, `IKRetargetPelvisMotionOp`).
-          Chain mappings live INSIDE each op in UE5.7 and are NOT introspected here.
+        - retarget_ops list — each entry includes:
+          - `struct_name` (e.g. IKRetargetFKChainsOp, IKRetargetIKChainsOp)
+          - `enabled` (bool)
+          - `chain_pairs` (if the op has chain mapping): array of
+            { source_chain, target_chain } pairs
+          - `settings` (JSON object of the op's per-chain settings, e.g.
+            FK chain rotation/translation modes, IK blend values, pole vector
+            alignment, stretch chain scaling, etc.)
         - profiles list — names of the FRetargetProfile entries on the asset
 
         Args:
@@ -1027,5 +1032,65 @@ def register_animation_tools(mcp: FastMCP):
             return response.get("result", response)
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_animation_properties(
+        ctx: Context,
+        asset_path: str,
+        b_enable_root_motion: bool = None,
+        root_motion_root_lock: str = None,
+        b_force_root_lock: bool = None,
+        b_use_normalized_root_motion_scale: bool = None,
+    ) -> Dict[str, Any]:
+        """Set root motion properties on a UAnimSequence asset (editor-only).
+
+        Only works on AnimSequence assets (not AnimMontage). Each parameter is
+        optional — only provided fields are modified, others are left unchanged.
+        The asset is marked dirty after modification (Ctrl+S in editor to save).
+
+        Args:
+            asset_path: Full AnimSequence asset path
+                (e.g., "/Game/Animations/Loco_Walk.Loco_Walk")
+            b_enable_root_motion: Enable/disable root motion extraction.
+                For Mover-driven characters, locomotion anims should be False.
+            root_motion_root_lock: How to lock the root bone when root motion
+                is disabled. One of "RefPose", "AnimFirstFrame", "Zero".
+            b_force_root_lock: Force root bone locking regardless of other settings.
+            b_use_normalized_root_motion_scale: Use normalized root motion scale.
+
+        Returns:
+            Dict with success, modified_fields list, and current values of all
+            root motion properties after modification.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"asset_path": asset_path}
+            if b_enable_root_motion is not None:
+                params["b_enable_root_motion"] = b_enable_root_motion
+            if root_motion_root_lock is not None:
+                params["root_motion_root_lock"] = root_motion_root_lock
+            if b_force_root_lock is not None:
+                params["b_force_root_lock"] = b_force_root_lock
+            if b_use_normalized_root_motion_scale is not None:
+                params["b_use_normalized_root_motion_scale"] = b_use_normalized_root_motion_scale
+
+            response = unreal.send_command("set_animation_properties", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            logger.info(f"Set animation properties for: {asset_path}")
+            return response.get("result", response)
+
+        except Exception as e:
+            return {"success": False, "message": f"Error setting animation properties: {e}"}
 
     logger.info("Animation tools registered successfully")

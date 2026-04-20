@@ -41,6 +41,9 @@
 #include "PoseSearch/PoseSearchFeatureChannel_Group.h"
 #include "EnumColumn.h"
 #include "BoolColumn.h"
+#include "Retargeter/IKRetargetOps.h"
+#include "Retargeter/IKRetargetChainMapping.h"
+#include "JsonObjectConverter.h"
 
 namespace
 {
@@ -173,6 +176,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("remove_chooser_table_row"))
     {
         return HandleRemoveChooserTableRow(Params);
+    }
+    if (CommandType == TEXT("set_animation_properties"))
+    {
+        return HandleSetAnimationProperties(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -1042,9 +1049,6 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetIKRetargeterInfo(c
     Result->SetNumberField(TEXT("target_pose_count"), TargetPosesJson.Num());
     Result->SetArrayField(TEXT("target_retarget_poses"), TargetPosesJson);
 
-    // Retarget op stack — UE5.7 stores chain mapping inside FInstancedStruct ops
-    // (FK Chains Op / IK Chains Op / Pelvis Motion Op / etc), so we surface the op
-    // struct names but do not introspect their internal chain mapping yet.
     const TArray<FInstancedStruct>& Ops = Retargeter->GetRetargetOps();
     TArray<TSharedPtr<FJsonValue>> OpsJson;
     OpsJson.Reserve(Ops.Num());
@@ -1054,6 +1058,42 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetIKRetargeterInfo(c
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
         Entry->SetNumberField(TEXT("index"), i);
         Entry->SetStringField(TEXT("struct_name"), OStruct ? OStruct->GetName() : FString());
+
+        if (const FIKRetargetOpBase* OpPtr = Ops[i].GetPtr<FIKRetargetOpBase>())
+        {
+            Entry->SetBoolField(TEXT("enabled"), OpPtr->IsEnabled());
+
+            if (const FRetargetChainMapping* Mapping = OpPtr->GetChainMapping())
+            {
+                const TArray<FRetargetChainPair>& Pairs = Mapping->GetChainPairs();
+                TArray<TSharedPtr<FJsonValue>> PairsJson;
+                PairsJson.Reserve(Pairs.Num());
+                for (const FRetargetChainPair& Pair : Pairs)
+                {
+                    TSharedPtr<FJsonObject> PairObj = MakeShared<FJsonObject>();
+                    PairObj->SetStringField(TEXT("source_chain"), Pair.SourceChainName.ToString());
+                    PairObj->SetStringField(TEXT("target_chain"), Pair.TargetChainName.ToString());
+                    PairsJson.Add(MakeShared<FJsonValueObject>(PairObj));
+                }
+                Entry->SetNumberField(TEXT("chain_pair_count"), Pairs.Num());
+                Entry->SetArrayField(TEXT("chain_pairs"), PairsJson);
+            }
+
+            FIKRetargetOpBase* MutableOpPtr = const_cast<FIKRetargetOpBase*>(OpPtr);
+            if (const FIKRetargetOpSettingsBase* Settings = MutableOpPtr->GetSettings())
+            {
+                const UScriptStruct* SettingsStruct = OpPtr->GetSettingsType();
+                if (SettingsStruct)
+                {
+                    TSharedRef<FJsonObject> SettingsObj = MakeShared<FJsonObject>();
+                    FJsonObjectConverter::UStructToJsonObject(
+                        SettingsStruct, Settings, SettingsObj,
+                        CPF_Edit, CPF_Transient | CPF_DuplicateTransient);
+                    Entry->SetObjectField(TEXT("settings"), SettingsObj);
+                }
+            }
+        }
+
         OpsJson.Add(MakeShared<FJsonValueObject>(Entry));
     }
     Result->SetNumberField(TEXT("retarget_op_count"), Ops.Num());
@@ -2514,4 +2554,89 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableRow
 #else
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Cannot remove rows outside of editor"));
 #endif
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UAnimSequence* AnimSeq = LoadObject<UAnimSequence>(nullptr, *AssetPath);
+    if (!AnimSeq)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimSequence not found: %s"), *AssetPath));
+    }
+
+    TArray<FString> ModifiedFields;
+
+    if (Params->HasField(TEXT("b_enable_root_motion")))
+    {
+        AnimSeq->bEnableRootMotion = Params->GetBoolField(TEXT("b_enable_root_motion"));
+        ModifiedFields.Add(TEXT("bEnableRootMotion"));
+    }
+
+    if (Params->HasField(TEXT("root_motion_root_lock")))
+    {
+        FString LockStr = Params->GetStringField(TEXT("root_motion_root_lock"));
+        if (LockStr.Equals(TEXT("RefPose"), ESearchCase::IgnoreCase))
+        {
+            AnimSeq->RootMotionRootLock = ERootMotionRootLock::RefPose;
+        }
+        else if (LockStr.Equals(TEXT("AnimFirstFrame"), ESearchCase::IgnoreCase))
+        {
+            AnimSeq->RootMotionRootLock = ERootMotionRootLock::AnimFirstFrame;
+        }
+        else if (LockStr.Equals(TEXT("Zero"), ESearchCase::IgnoreCase))
+        {
+            AnimSeq->RootMotionRootLock = ERootMotionRootLock::Zero;
+        }
+        else
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Invalid root_motion_root_lock: %s (expected RefPose/AnimFirstFrame/Zero)"), *LockStr));
+        }
+        ModifiedFields.Add(TEXT("RootMotionRootLock"));
+    }
+
+    if (Params->HasField(TEXT("b_force_root_lock")))
+    {
+        AnimSeq->bForceRootLock = Params->GetBoolField(TEXT("b_force_root_lock"));
+        ModifiedFields.Add(TEXT("bForceRootLock"));
+    }
+
+    if (Params->HasField(TEXT("b_use_normalized_root_motion_scale")))
+    {
+        AnimSeq->bUseNormalizedRootMotionScale = Params->GetBoolField(TEXT("b_use_normalized_root_motion_scale"));
+        ModifiedFields.Add(TEXT("bUseNormalizedRootMotionScale"));
+    }
+
+    if (ModifiedFields.Num() == 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No recognized properties to set"));
+    }
+
+    AnimSeq->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AnimSeq->GetPathName());
+    Result->SetNumberField(TEXT("modified_count"), ModifiedFields.Num());
+
+    TArray<TSharedPtr<FJsonValue>> FieldsJson;
+    for (const FString& F : ModifiedFields)
+    {
+        FieldsJson.Add(MakeShared<FJsonValueString>(F));
+    }
+    Result->SetArrayField(TEXT("modified_fields"), FieldsJson);
+
+    Result->SetBoolField(TEXT("b_enable_root_motion"), AnimSeq->bEnableRootMotion);
+    Result->SetStringField(TEXT("root_motion_root_lock"), RootMotionRootLockToString(AnimSeq->RootMotionRootLock.GetValue()));
+    Result->SetBoolField(TEXT("b_force_root_lock"), AnimSeq->bForceRootLock);
+    Result->SetBoolField(TEXT("b_use_normalized_root_motion_scale"), AnimSeq->bUseNormalizedRootMotionScale);
+
+    return Result;
 }
