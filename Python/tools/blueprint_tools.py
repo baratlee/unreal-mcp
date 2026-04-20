@@ -511,6 +511,63 @@ def register_blueprint_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_blueprint_cdo_properties(
+        ctx: Context,
+        blueprint_path: str,
+        max_depth: int = 2,
+        category_filter: str = ""
+    ) -> Dict[str, Any]:
+        """Get all editable properties from a Blueprint's Class Default Object (CDO).
+
+        Reads every UPROPERTY marked EditAnywhere / EditDefaultsOnly on the
+        Blueprint's generated class CDO. This includes C++ properties defined
+        in the parent class that are set via the Blueprint's Class Defaults panel
+        (e.g., animation references, config floats, enum settings).
+
+        Args:
+            blueprint_path: Asset path of the Blueprint
+                (e.g., "/Game/Blueprints/MyABP" or just "MyABP")
+            max_depth: How deep to recurse into nested sub-objects (1-4, default 2).
+            category_filter: Optional substring filter on property Category metadata.
+                Only properties whose Category contains this string (case-insensitive)
+                are returned. E.g., "Quad" to see only Quad-related properties,
+                "Animation" for animation properties. Empty string returns all.
+
+        Returns:
+            CDO info with blueprint_path, class_name, parent_class, and a
+            properties array. Each property has name, category, type, and value.
+            Object properties include object_class and optionally sub_properties.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_path": blueprint_path,
+                "max_depth": max_depth
+            }
+            if category_filter:
+                params["category_filter"] = category_filter
+
+            response = unreal.send_command("get_blueprint_cdo_properties", params)
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"Get blueprint CDO properties response for: {blueprint_path}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error getting blueprint CDO properties: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_blueprint_function_graph(
         ctx: Context,
         blueprint_path: str,

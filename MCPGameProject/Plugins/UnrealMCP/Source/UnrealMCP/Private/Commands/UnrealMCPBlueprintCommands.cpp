@@ -356,6 +356,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     {
         return HandleGetComponentProperties(Params);
     }
+    else if (CommandType == TEXT("get_blueprint_cdo_properties"))
+    {
+        return HandleGetBlueprintCDOProperties(Params);
+    }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
@@ -2390,5 +2394,159 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetComponentPropertie
     SerializePropertiesToJson(ComponentObj, PropsArray, MaxDepth);
     ResultObj->SetArrayField(TEXT("properties"), PropsArray);
 
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintCDOProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+
+    int32 MaxDepth = 2;
+    if (Params->HasField(TEXT("max_depth")))
+    {
+        MaxDepth = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("max_depth"))), 1, 4);
+    }
+
+    FString CategoryFilter;
+    Params->TryGetStringField(TEXT("category_filter"), CategoryFilter);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+    }
+
+    UClass* GenClass = Blueprint->GeneratedClass;
+    if (!GenClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no GeneratedClass"));
+    }
+
+    UObject* CDO = GenClass->GetDefaultObject();
+    if (!CDO)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get CDO"));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    ResultObj->SetStringField(TEXT("class_name"), GenClass->GetName());
+    ResultObj->SetStringField(TEXT("parent_class"), GenClass->GetSuperClass() ? GenClass->GetSuperClass()->GetName() : TEXT("None"));
+
+    TArray<TSharedPtr<FJsonValue>> PropsArray;
+
+    for (TFieldIterator<FProperty> PropIt(GenClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        if (!Prop) continue;
+
+        if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+        if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient)) continue;
+
+        if (!CategoryFilter.IsEmpty())
+        {
+            const FString& Cat = Prop->GetMetaData(TEXT("Category"));
+            if (!Cat.Contains(CategoryFilter, ESearchCase::IgnoreCase))
+            {
+                continue;
+            }
+        }
+
+        TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+        PropObj->SetStringField(TEXT("name"), Prop->GetName());
+        PropObj->SetStringField(TEXT("category"), Prop->GetMetaData(TEXT("Category")));
+
+        FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop);
+        FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
+
+        if (ObjProp)
+        {
+            UObject* SubObj = ObjProp->GetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(CDO));
+            if (SubObj)
+            {
+                PropObj->SetStringField(TEXT("type"), TEXT("object"));
+                PropObj->SetStringField(TEXT("value"), SubObj->GetPathName());
+                PropObj->SetStringField(TEXT("object_class"), SubObj->GetClass()->GetName());
+
+                if (MaxDepth > 1 && SubObj->IsIn(CDO))
+                {
+                    TArray<TSharedPtr<FJsonValue>> SubPropsArray;
+                    SerializePropertiesToJson(SubObj, SubPropsArray, MaxDepth - 1);
+                    PropObj->SetArrayField(TEXT("sub_properties"), SubPropsArray);
+                }
+            }
+            else
+            {
+                PropObj->SetStringField(TEXT("type"), TEXT("object"));
+                PropObj->SetStringField(TEXT("value"), TEXT("None"));
+            }
+        }
+        else if (ArrayProp)
+        {
+            FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(CDO));
+            FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner);
+
+            if (InnerObjProp && ArrayHelper.Num() > 0)
+            {
+                PropObj->SetStringField(TEXT("type"), TEXT("TArray"));
+                TArray<TSharedPtr<FJsonValue>> Elements;
+                for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+                {
+                    UObject* ElemObj = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
+                    if (ElemObj)
+                    {
+                        TSharedPtr<FJsonObject> ElemJson = MakeShared<FJsonObject>();
+                        ElemJson->SetStringField(TEXT("class"), ElemObj->GetClass()->GetName());
+                        ElemJson->SetStringField(TEXT("path"), ElemObj->GetPathName());
+
+                        if (MaxDepth > 1 && ElemObj->IsIn(CDO))
+                        {
+                            TArray<TSharedPtr<FJsonValue>> SubPropsArray;
+                            SerializePropertiesToJson(ElemObj, SubPropsArray, MaxDepth - 1);
+                            ElemJson->SetArrayField(TEXT("properties"), SubPropsArray);
+                        }
+
+                        Elements.Add(MakeShared<FJsonValueObject>(ElemJson));
+                    }
+                }
+                PropObj->SetArrayField(TEXT("elements"), Elements);
+            }
+            else
+            {
+                FString ValueStr;
+                ArrayProp->ExportTextItem_Direct(ValueStr, ArrayProp->ContainerPtrToValuePtr<void>(CDO), nullptr, nullptr, PPF_None);
+                PropObj->SetStringField(TEXT("type"), TEXT("TArray"));
+                PropObj->SetStringField(TEXT("value"), ValueStr);
+            }
+        }
+        else
+        {
+            FString ValueStr;
+            Prop->ExportTextItem_Direct(ValueStr, Prop->ContainerPtrToValuePtr<void>(CDO), nullptr, nullptr, PPF_None);
+
+            FString TypeStr;
+            if (CastField<FBoolProperty>(Prop)) TypeStr = TEXT("bool");
+            else if (CastField<FIntProperty>(Prop)) TypeStr = TEXT("int");
+            else if (CastField<FFloatProperty>(Prop)) TypeStr = TEXT("float");
+            else if (CastField<FDoubleProperty>(Prop)) TypeStr = TEXT("double");
+            else if (CastField<FStrProperty>(Prop)) TypeStr = TEXT("string");
+            else if (CastField<FNameProperty>(Prop)) TypeStr = TEXT("FName");
+            else if (CastField<FEnumProperty>(Prop) || CastField<FByteProperty>(Prop)) TypeStr = TEXT("enum");
+            else if (CastField<FStructProperty>(Prop)) TypeStr = CastField<FStructProperty>(Prop)->Struct->GetName();
+            else TypeStr = Prop->GetCPPType();
+
+            PropObj->SetStringField(TEXT("type"), TypeStr);
+            PropObj->SetStringField(TEXT("value"), ValueStr);
+        }
+
+        PropsArray.Add(MakeShared<FJsonValueObject>(PropObj));
+    }
+
+    ResultObj->SetArrayField(TEXT("properties"), PropsArray);
     return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

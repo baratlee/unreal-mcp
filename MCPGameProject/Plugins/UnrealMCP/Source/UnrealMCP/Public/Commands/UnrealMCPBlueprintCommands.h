@@ -31,6 +31,7 @@ private:
     TSharedPtr<FJsonObject> HandleGetAnimStateGraph(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimTransitionGraph(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetComponentProperties(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetBlueprintCDOProperties(const TSharedPtr<FJsonObject>& Params);
 
     // Helper functions
     UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName, FString& OutSource);
