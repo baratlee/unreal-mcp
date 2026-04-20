@@ -352,6 +352,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     {
         return HandleGetAnimTransitionGraph(Params);
     }
+    else if (CommandType == TEXT("get_component_properties"))
+    {
+        return HandleGetComponentProperties(Params);
+    }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
@@ -1560,6 +1564,48 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
     }
     ResultObj->SetArrayField(TEXT("components"), ComponentsArray);
 
+    // --- Inherited Components (from parent BP SCS chain + native CDO) ---
+    TArray<TSharedPtr<FJsonValue>> InheritedComponentsArray;
+    {
+        UClass* ParentClass = Blueprint->ParentClass;
+        while (ParentClass)
+        {
+            UBlueprint* ParentBP = Cast<UBlueprint>(ParentClass->ClassGeneratedBy);
+            if (ParentBP && ParentBP->SimpleConstructionScript)
+            {
+                for (USCS_Node* Node : ParentBP->SimpleConstructionScript->GetAllNodes())
+                {
+                    if (!Node || !Node->ComponentTemplate) continue;
+                    TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+                    CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+                    CompObj->SetStringField(TEXT("class"), Node->ComponentTemplate->GetClass()->GetName());
+                    CompObj->SetStringField(TEXT("inherited_from"), ParentBP->GetName());
+                    InheritedComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+                }
+                ParentClass = ParentClass->GetSuperClass();
+            }
+            else
+            {
+                if (AActor* CDO = Cast<AActor>(ParentClass->GetDefaultObject()))
+                {
+                    TInlineComponentArray<UActorComponent*> NativeComps;
+                    CDO->GetComponents(NativeComps);
+                    for (UActorComponent* Comp : NativeComps)
+                    {
+                        if (!Comp) continue;
+                        TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+                        CompObj->SetStringField(TEXT("name"), Comp->GetName());
+                        CompObj->SetStringField(TEXT("class"), Comp->GetClass()->GetName());
+                        CompObj->SetStringField(TEXT("inherited_from"), ParentClass->GetName());
+                        InheritedComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    ResultObj->SetArrayField(TEXT("inherited_components"), InheritedComponentsArray);
+
     // --- Variables (from NewVariables) ---
     TArray<TSharedPtr<FJsonValue>> VariablesArray;
     for (const FBPVariableDescription& Var : Blueprint->NewVariables)
@@ -2134,6 +2180,215 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimTransitionGrap
         NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
+
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ---------------------------------------------------------------------------
+// FindComponentTemplate
+// ---------------------------------------------------------------------------
+UObject* FUnrealMCPBlueprintCommands::FindComponentTemplate(
+    UBlueprint* Blueprint, const FString& ComponentName, FString& OutSource)
+{
+    // 1. This BP's SCS
+    if (Blueprint->SimpleConstructionScript)
+    {
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+        {
+            if (Node && Node->ComponentTemplate &&
+                Node->GetVariableName().ToString() == ComponentName)
+            {
+                OutSource = TEXT("scs");
+                return Node->ComponentTemplate;
+            }
+        }
+    }
+
+    // 2. Walk parent BP chain
+    UClass* ParentClass = Blueprint->ParentClass;
+    while (ParentClass)
+    {
+        UBlueprint* ParentBP = Cast<UBlueprint>(ParentClass->ClassGeneratedBy);
+        if (ParentBP && ParentBP->SimpleConstructionScript)
+        {
+            for (USCS_Node* Node : ParentBP->SimpleConstructionScript->GetAllNodes())
+            {
+                if (Node && Node->ComponentTemplate &&
+                    Node->GetVariableName().ToString() == ComponentName)
+                {
+                    OutSource = FString::Printf(TEXT("inherited_scs:%s"), *ParentBP->GetName());
+                    return Node->ComponentTemplate;
+                }
+            }
+            ParentClass = ParentClass->GetSuperClass();
+        }
+        else
+        {
+            // 3. C++ class – check native CDO components
+            if (AActor* CDO = Cast<AActor>(ParentClass->GetDefaultObject()))
+            {
+                TInlineComponentArray<UActorComponent*> NativeComps;
+                CDO->GetComponents(NativeComps);
+                for (UActorComponent* Comp : NativeComps)
+                {
+                    if (Comp && Comp->GetName() == ComponentName)
+                    {
+                        OutSource = FString::Printf(TEXT("native:%s"), *ParentClass->GetName());
+                        return Comp;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// SerializePropertiesToJson
+// ---------------------------------------------------------------------------
+void FUnrealMCPBlueprintCommands::SerializePropertiesToJson(
+    UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray, int32 Depth)
+{
+    if (!Object || Depth <= 0) return;
+
+    for (TFieldIterator<FProperty> PropIt(Object->GetClass()); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+
+        TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+        PropObj->SetStringField(TEXT("name"), Prop->GetName());
+        PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+        PropObj->SetStringField(TEXT("category"), Prop->GetMetaData(TEXT("Category")));
+
+        void* ValueAddr = Prop->ContainerPtrToValuePtr<void>(Object);
+
+        // --- Object property (single nested sub-object) ---
+        FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop);
+        if (ObjProp)
+        {
+            UObject* SubObj = ObjProp->GetObjectPropertyValue(ValueAddr);
+            if (SubObj)
+            {
+                PropObj->SetStringField(TEXT("value"), SubObj->GetPathName());
+                PropObj->SetStringField(TEXT("object_class"), SubObj->GetClass()->GetName());
+
+                if (Depth > 1 && SubObj->IsIn(Object))
+                {
+                    TArray<TSharedPtr<FJsonValue>> SubProps;
+                    SerializePropertiesToJson(SubObj, SubProps, Depth - 1);
+                    PropObj->SetArrayField(TEXT("sub_properties"), SubProps);
+                }
+            }
+            else
+            {
+                PropObj->SetStringField(TEXT("value"), TEXT("None"));
+            }
+            OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
+            continue;
+        }
+
+        // --- Array property – expand object elements ---
+        FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
+        if (ArrayProp)
+        {
+            FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner);
+            if (InnerObjProp && Depth > 1)
+            {
+                FScriptArrayHelper ArrayHelper(ArrayProp, ValueAddr);
+                TArray<TSharedPtr<FJsonValue>> ElementsArray;
+                for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+                {
+                    UObject* ElemObj = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
+                    if (!ElemObj) continue;
+
+                    TSharedPtr<FJsonObject> ElemJson = MakeShared<FJsonObject>();
+                    ElemJson->SetStringField(TEXT("class"), ElemObj->GetClass()->GetName());
+                    ElemJson->SetStringField(TEXT("path"), ElemObj->GetPathName());
+
+                    TArray<TSharedPtr<FJsonValue>> ElemProps;
+                    SerializePropertiesToJson(ElemObj, ElemProps, Depth - 1);
+                    ElemJson->SetArrayField(TEXT("properties"), ElemProps);
+
+                    ElementsArray.Add(MakeShared<FJsonValueObject>(ElemJson));
+                }
+                PropObj->SetArrayField(TEXT("elements"), ElementsArray);
+            }
+            else
+            {
+                FString ValueStr;
+                Prop->ExportTextItem_Direct(ValueStr, ValueAddr, nullptr, nullptr, PPF_None);
+                if (!ValueStr.IsEmpty())
+                {
+                    PropObj->SetStringField(TEXT("value"), ValueStr);
+                }
+            }
+            OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
+            continue;
+        }
+
+        // --- All other properties – export as text ---
+        FString ValueStr;
+        Prop->ExportTextItem_Direct(ValueStr, ValueAddr, nullptr, nullptr, PPF_None);
+        if (!ValueStr.IsEmpty())
+        {
+            PropObj->SetStringField(TEXT("value"), ValueStr);
+        }
+
+        OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetComponentProperties
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetComponentProperties(
+    const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+
+    FString ComponentName;
+    if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+    }
+
+    int32 MaxDepth = 2;
+    if (Params->HasField(TEXT("max_depth")))
+    {
+        MaxDepth = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("max_depth"))), 1, 4);
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+    }
+
+    FString Source;
+    UObject* ComponentObj = FindComponentTemplate(Blueprint, ComponentName, Source);
+    if (!ComponentObj)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    ResultObj->SetStringField(TEXT("component_name"), ComponentName);
+    ResultObj->SetStringField(TEXT("component_class"), ComponentObj->GetClass()->GetName());
+    ResultObj->SetStringField(TEXT("source"), Source);
+
+    TArray<TSharedPtr<FJsonValue>> PropsArray;
+    SerializePropertiesToJson(ComponentObj, PropsArray, MaxDepth);
+    ResultObj->SetArrayField(TEXT("properties"), PropsArray);
 
     return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

@@ -289,7 +289,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_blueprint_function_graph") ||
                      CommandType == TEXT("get_anim_state_machine") ||
                      CommandType == TEXT("get_anim_state_graph") ||
-                     CommandType == TEXT("get_anim_transition_graph"))
+                     CommandType == TEXT("get_anim_transition_graph") ||
+                     CommandType == TEXT("get_component_properties"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }

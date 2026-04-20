@@ -456,6 +456,61 @@ def register_blueprint_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_component_properties(
+        ctx: Context,
+        blueprint_path: str,
+        component_name: str,
+        max_depth: int = 2
+    ) -> Dict[str, Any]:
+        """Get all editable properties of a component in a Blueprint, including
+        inherited components and nested sub-object properties.
+
+        Searches for the component across:
+        1. The Blueprint's own SimpleConstructionScript
+        2. Parent Blueprint SCS chains (inherited BP components)
+        3. Native C++ CDO components (inherited C++ components)
+
+        Args:
+            blueprint_path: Asset path of the Blueprint
+                (e.g., "/Game/Blueprints/BP_Character")
+            component_name: Name of the component to inspect
+                (e.g., "CharacterMover", "Mesh", "CapsuleComponent")
+            max_depth: How deep to recurse into nested sub-objects (1-4, default 2).
+                Use 1 for flat properties only, 2+ to expand sub-objects like
+                SharedSettings/CommonLegacyMovementSettings.
+
+        Returns:
+            Component info with blueprint_path, component_name, component_class,
+            source (where the component was found), and a properties array.
+            Nested sub-objects appear as elements with their own properties arrays.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_component_properties", {
+                "blueprint_path": blueprint_path,
+                "component_name": component_name,
+                "max_depth": max_depth
+            })
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"Get component properties response for: {component_name}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error getting component properties: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_blueprint_function_graph(
         ctx: Context,
         blueprint_path: str,

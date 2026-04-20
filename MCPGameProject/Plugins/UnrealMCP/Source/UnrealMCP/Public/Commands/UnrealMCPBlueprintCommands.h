@@ -30,8 +30,11 @@ private:
     TSharedPtr<FJsonObject> HandleGetAnimStateMachine(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimStateGraph(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimTransitionGraph(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetComponentProperties(const TSharedPtr<FJsonObject>& Params);
 
     // Helper functions
+    UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName, FString& OutSource);
+    void SerializePropertiesToJson(UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray, int32 Depth);
     TSharedPtr<FJsonObject> AddComponentToBlueprint(const FString& BlueprintName, const FString& ComponentType, 
                                                    const FString& ComponentName, const FString& MeshType,
                                                    const TArray<float>& Location, const TArray<float>& Rotation,

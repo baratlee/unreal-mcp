@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 61 tools total, organized by category.
+> 62 tools total, organized by category.
 
 ---
 
@@ -17,18 +17,19 @@
 | `set_actor_property` | 设置 Actor 上的指定属性 |
 | `spawn_blueprint_actor` | 从 Blueprint 资产生成 Actor 实例 |
 
-## Blueprint Tools (9)
+## Blueprint Tools (10)
 
 | Tool | Description |
 |---|---|
 | `create_blueprint` | 创建新 Blueprint 类 |
 | `add_component_to_blueprint` | 为 Blueprint 添加组件 |
 | `set_component_property` | 设置 Blueprint 中组件的属性 |
+| `get_component_properties` | 读取 BP 组件的所有属性（含继承组件 + 嵌套子对象递归展开） |
 | `set_static_mesh_properties` | 设置 StaticMeshComponent 的网格体属性 |
 | `set_physics_properties` | 设置组件的物理属性 |
 | `set_blueprint_property` | 设置 Blueprint CDO（Class Default Object）上的属性 |
 | `compile_blueprint` | 编译 Blueprint |
-| `get_blueprint_info` | 获取 Blueprint 资产详情：组件、变量、函数列表、事件图节点 |
+| `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
 | `get_blueprint_function_graph` | 展开单个函数/AnimGraph 的完整节点图（支持 `pin_payload_mode` 控制响应体积） |
 
 ## Blueprint Node Tools (8)
