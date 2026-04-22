@@ -62,4 +62,11 @@ private:
 
     // Animation write tools
     TSharedPtr<FJsonObject> HandleSetAnimationProperties(const TSharedPtr<FJsonObject>& Params);
+
+    // IKRig write tools (Batch C.1)
+    TSharedPtr<FJsonObject> HandleCreateIKRig(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRigRetargetRoot(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIKRigRetargetChain(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIKRigGoal(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIKRigSolver(const TSharedPtr<FJsonObject>& Params);
 };

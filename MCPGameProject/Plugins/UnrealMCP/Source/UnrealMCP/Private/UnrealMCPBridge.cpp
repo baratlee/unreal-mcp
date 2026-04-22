@@ -364,7 +364,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_pose_search_schema_trajectory_sample") ||
                      CommandType == TEXT("add_chooser_table_row") ||
                      CommandType == TEXT("remove_chooser_table_row") ||
-                     CommandType == TEXT("set_animation_properties"))
+                     CommandType == TEXT("set_animation_properties") ||
+                     CommandType == TEXT("create_ik_rig") ||
+                     CommandType == TEXT("set_ik_rig_retarget_root") ||
+                     CommandType == TEXT("add_ik_rig_retarget_chain") ||
+                     CommandType == TEXT("add_ik_rig_goal") ||
+                     CommandType == TEXT("add_ik_rig_solver"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

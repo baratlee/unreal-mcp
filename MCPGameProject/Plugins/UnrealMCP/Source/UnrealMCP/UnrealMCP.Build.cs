@@ -68,6 +68,7 @@ public class UnrealMCP : ModuleRules
 					"AnimationBlueprintLibrary", // For animation data read helpers
 					"Chooser",             // For UChooserTable read-only inspection
 					"IKRig",               // For UIKRigDefinition / UIKRetargeter read-only inspection
+					"IKRigEditor",         // For UIKRigController / UIKRetargeterController write APIs
 					"AnimGraph",           // For State Machine editor classes (UAnimStateNode, UAnimStateTransitionNode, etc.)
 					"EnhancedInput",       // For UInputAction / UInputMappingContext read-only inspection
 					"PoseSearch"           // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection

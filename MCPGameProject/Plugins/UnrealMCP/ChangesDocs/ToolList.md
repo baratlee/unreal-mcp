@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 70 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 74。)
+> 75 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 79。)
 
 ---
 
@@ -92,14 +92,19 @@
 | `add_chooser_table_row` | 添加行（asset result + 按列位置传入条件值，支持 Enum/Bool 列） |
 | `remove_chooser_table_row` | 按 index 移除行（同步移除所有列的行值） |
 
-## IK Tools (4)
+## IK Tools (9)
 
 | Tool | Description |
 |---|---|
 | `list_ik_rigs` | 通过 Asset Registry 列出项目中所有 UIKRigDefinition 资产 |
-| `get_ik_rig_info` | 读取 IKRig 的静态结构（骨骼链、Solver、Goal） |
+| `get_ik_rig_info` | 读取 IKRig 的静态结构（骨骼链、Solver（含完整字段）、Goal） |
 | `list_ik_retargeters` | 通过 Asset Registry 列出项目中所有 UIKRetargeter 资产 |
 | `get_ik_retargeter_info` | 读取 IKRetargeter 的静态结构（源/目标 IKRig、Op 栈含 chain_pairs + per-chain settings） |
+| `create_ik_rig` | 新建 UIKRigDefinition 资产，可选传入 preview SKM 自动载入骨骼层级 |
+| `set_ik_rig_retarget_root` | 设置 IKRig 的 retarget 根骨骼（pelvis） |
+| `add_ik_rig_retarget_chain` | 添加 retarget chain（name + start/end bone + 可选 goal） |
+| `add_ik_rig_goal` | 添加 IK Goal（name + 绑定骨骼） |
+| `add_ik_rig_solver` | 向 solver 栈末尾追加 solver（支持全路径或裸 struct 名） |
 
 ## State Machine Tools (3)
 

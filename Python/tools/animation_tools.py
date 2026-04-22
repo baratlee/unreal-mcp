@@ -1513,4 +1513,199 @@ def register_animation_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": f"Error setting animation properties: {e}"}
 
+    # ---------------------------------------------------------------------
+    # Batch C.1: IKRig write tools (Items 8 + 9 from UnrealMCP_扩展需求清单.md)
+    # ---------------------------------------------------------------------
+
+    @mcp.tool()
+    def create_ik_rig(
+        ctx: Context,
+        asset_path: str,
+        preview_skeletal_mesh_path: str = "",
+    ) -> Dict[str, Any]:
+        """Create a new UIKRigDefinition asset.
+
+        The resulting asset is dirty in-memory but NOT saved to disk — the caller
+        should save via the editor or a future `save_asset` command.
+
+        Args:
+            asset_path: Target asset path, e.g. "/Game/.../IK_Tgt_StoneGolem".
+            preview_skeletal_mesh_path: Optional SkeletalMesh to assign as preview
+                (this also loads the skeleton hierarchy into the rig).
+
+        Returns:
+            Dict with success, asset_path (full object path of created asset),
+            skeletal_mesh_assigned (bool), skeletal_mesh_warning (present only on
+            failure), saved=False.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"asset_path": asset_path}
+            if preview_skeletal_mesh_path:
+                params["preview_skeletal_mesh_path"] = preview_skeletal_mesh_path
+            response = unreal.send_command("create_ik_rig", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error creating IKRig: {e}"}
+
+    @mcp.tool()
+    def set_ik_rig_retarget_root(
+        ctx: Context,
+        asset_path: str,
+        bone_name: str,
+    ) -> Dict[str, Any]:
+        """Set the retarget root (pelvis) bone on an IKRig asset.
+
+        Args:
+            asset_path: IKRig asset path.
+            bone_name: Name of the root bone (typically "pelvis").
+
+        Returns:
+            Dict with success, asset_path, retarget_root_bone.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "set_ik_rig_retarget_root",
+                {"asset_path": asset_path, "bone_name": bone_name},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting retarget root: {e}"}
+
+    @mcp.tool()
+    def add_ik_rig_retarget_chain(
+        ctx: Context,
+        asset_path: str,
+        chain_name: str,
+        start_bone: str,
+        end_bone: str,
+        goal_name: str = "",
+    ) -> Dict[str, Any]:
+        """Add a retarget chain to an IKRig asset.
+
+        Args:
+            asset_path: IKRig asset path.
+            chain_name: Unique chain name (e.g. "LeftArm"). Will be uniquified on collision.
+            start_bone: First bone in the chain.
+            end_bone: Last bone in the chain.
+            goal_name: Optional IK goal to associate with this chain (e.g. "LeftHandIK");
+                       empty or None leaves the chain without a goal.
+
+        Returns:
+            Dict with success, asset_path, assigned_chain_name (after uniquification).
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "asset_path": asset_path,
+                "chain_name": chain_name,
+                "start_bone": start_bone,
+                "end_bone": end_bone,
+            }
+            if goal_name:
+                params["goal_name"] = goal_name
+            response = unreal.send_command("add_ik_rig_retarget_chain", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding retarget chain: {e}"}
+
+    @mcp.tool()
+    def add_ik_rig_goal(
+        ctx: Context,
+        asset_path: str,
+        goal_name: str,
+        bone_name: str,
+    ) -> Dict[str, Any]:
+        """Add a new IK goal to an IKRig asset.
+
+        Args:
+            asset_path: IKRig asset path.
+            goal_name: Unique goal name (e.g. "LeftHandIK").
+            bone_name: The bone this goal is attached to (e.g. "hand_l").
+
+        Returns:
+            Dict with success, asset_path, assigned_goal_name, bone_name.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "add_ik_rig_goal",
+                {"asset_path": asset_path, "goal_name": goal_name, "bone_name": bone_name},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding goal: {e}"}
+
+    @mcp.tool()
+    def add_ik_rig_solver(
+        ctx: Context,
+        asset_path: str,
+        solver_struct_name: str,
+    ) -> Dict[str, Any]:
+        """Add a solver to the bottom of an IKRig's solver stack.
+
+        Args:
+            asset_path: IKRig asset path.
+            solver_struct_name: Either the full UStruct package path
+                (e.g. "/Script/IKRig.IKRigFBIKSolver") or just the struct name
+                (e.g. "IKRigFBIKSolver"); the C++ side resolves both.
+
+        Returns:
+            Dict with success, asset_path, solver_index (position in the stack).
+
+        Note: solver-specific parameters (Root Bone, iteration count, preferred angles
+        etc.) are NOT configured by this tool — inspect them with the extended
+        `get_ik_rig_info` (fields blob) and configure via a future op-field setter.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "add_ik_rig_solver",
+                {"asset_path": asset_path, "solver_struct_name": solver_struct_name},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding solver: {e}"}
+
     logger.info("Animation tools registered successfully")
