@@ -872,6 +872,93 @@ def register_animation_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def set_pose_search_database_cost_biases(
+        ctx: Context, asset_path: str,
+        continuing_pose_cost_bias: float = None,
+        base_cost_bias: float = None,
+        looping_cost_bias: float = None,
+    ) -> Dict[str, Any]:
+        """Set cost bias fields on a PoseSearchDatabase.
+
+        Each parameter is optional — only provided fields are modified.
+        These biases control MM continuing-pose preference and looping preference.
+
+        Args:
+            asset_path: PSD object path
+            continuing_pose_cost_bias: Negative value favors continuing current pose
+                (typical: -0.1 for strong continuity, -0.01 for weak)
+            base_cost_bias: Flat cost offset applied to all entries
+            looping_cost_bias: Negative value favors looping animations
+
+        Returns:
+            Dict with success, modified_fields[], and current values of all three biases.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path}
+            if continuing_pose_cost_bias is not None:
+                params["continuing_pose_cost_bias"] = continuing_pose_cost_bias
+            if base_cost_bias is not None:
+                params["base_cost_bias"] = base_cost_bias
+            if looping_cost_bias is not None:
+                params["looping_cost_bias"] = looping_cost_bias
+            response = unreal.send_command("set_pose_search_database_cost_biases", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_pose_search_database_animation_flags(
+        ctx: Context, asset_path: str, index: int,
+        enabled: bool = None,
+        disable_reselection: bool = None,
+        mirror_option: str = "",
+        sampling_range_min: float = None,
+        sampling_range_max: float = None,
+    ) -> Dict[str, Any]:
+        """Modify flags on an existing animation entry in a PoseSearchDatabase.
+
+        Each parameter is optional — only provided fields are modified.
+
+        Args:
+            asset_path: PSD object path
+            index: Index of the animation entry (0-based)
+            enabled: bEnabled flag
+            disable_reselection: bDisableReselection flag (suppresses re-picking
+                the same animation at a different time, reduces micro-jitter)
+            mirror_option: Mirror option string. One of:
+                "UnmirroredOnly" / "MirroredOnly" / "UnmirroredAndMirrored"
+            sampling_range_min: Sampling range start (seconds, 0 = from beginning)
+            sampling_range_max: Sampling range end (seconds, 0 = to end)
+
+        Returns:
+            Dict with success, index, modified_fields[].
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {"asset_path": asset_path, "index": index}
+            if enabled is not None:
+                params["enabled"] = enabled
+            if disable_reselection is not None:
+                params["disable_reselection"] = disable_reselection
+            if mirror_option:
+                params["mirror_option"] = mirror_option
+            if sampling_range_min is not None:
+                params["sampling_range_min"] = sampling_range_min
+            if sampling_range_max is not None:
+                params["sampling_range_max"] = sampling_range_max
+            response = unreal.send_command("set_pose_search_database_animation_flags", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     # ── PSS Write Tools ──
 
     @mcp.tool()
@@ -972,6 +1059,86 @@ def register_animation_tools(mcp: FastMCP):
             response = unreal.send_command("remove_pose_search_schema_channel", {
                 "asset_path": asset_path, "index": index
             })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_pose_search_schema_channel_weight(
+        ctx: Context, asset_path: str, channel_index: int, weight: float
+    ) -> Dict[str, Any]:
+        """Set the top-level Weight field on a PoseSearchSchema channel.
+
+        Works for any channel class that has a 'Weight' UPROPERTY
+        (UPoseSearchFeatureChannel_Trajectory / _Position / _Velocity / _Heading etc).
+        Modifying Trajectory channel weight is the primary use case to tune
+        MM search sensitivity.
+
+        Args:
+            asset_path: PSS object path
+            channel_index: Channel index in the Channels array (usually 0 for Trajectory)
+            weight: New weight value (typical: 1.0 for balanced, higher = more aggressive)
+
+        Returns:
+            Dict with success, channel_index, channel_class, weight (current value).
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_pose_search_schema_channel_weight", {
+                "asset_path": asset_path,
+                "channel_index": channel_index,
+                "weight": weight,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_pose_search_schema_trajectory_sample(
+        ctx: Context, asset_path: str, channel_index: int, sample_index: int,
+        offset: float = None,
+        weight: float = None,
+        flags: int = None,
+    ) -> Dict[str, Any]:
+        """Modify a sample on a Trajectory channel's Samples array.
+
+        Each parameter is optional — only provided fields are modified.
+        Target channel must be UPoseSearchFeatureChannel_Trajectory (has Samples array).
+
+        Args:
+            asset_path: PSS object path
+            channel_index: Channel index in Channels (usually 0 for Trajectory)
+            sample_index: Sample index in the channel's Samples array
+            offset: Sample time offset (seconds, negative = past, positive = future)
+            weight: Sample weight (float, >0)
+            flags: EPoseSearchTrajectoryFlags bitmask (Velocity=1, Position=2,
+                VelocityDirection=4, FacingDirection=8, VelocityXY=16, PositionXY=32,
+                VelocityDirectionXY=64, FacingDirectionXY=128).
+                Combine with bitwise OR, e.g. 144 = Position + FacingDirectionXY.
+
+        Returns:
+            Dict with success, channel_index, sample_index, modified_fields[].
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {
+                "asset_path": asset_path,
+                "channel_index": channel_index,
+                "sample_index": sample_index,
+            }
+            if offset is not None:
+                params["offset"] = offset
+            if weight is not None:
+                params["weight"] = weight
+            if flags is not None:
+                params["flags"] = flags
+            response = unreal.send_command("set_pose_search_schema_trajectory_sample", params)
             if isinstance(response, dict) and "error" in response:
                 return {"success": False, "message": response["error"]}
             return response.get("result", response)

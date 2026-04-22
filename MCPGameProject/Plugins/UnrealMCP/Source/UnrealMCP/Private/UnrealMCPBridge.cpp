@@ -349,9 +349,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_pose_search_database_schema") ||
                      CommandType == TEXT("add_pose_search_database_animation") ||
                      CommandType == TEXT("remove_pose_search_database_animation") ||
+                     CommandType == TEXT("set_pose_search_database_cost_biases") ||
+                     CommandType == TEXT("set_pose_search_database_animation_flags") ||
                      CommandType == TEXT("set_pose_search_schema_settings") ||
                      CommandType == TEXT("add_pose_search_schema_channel") ||
                      CommandType == TEXT("remove_pose_search_schema_channel") ||
+                     CommandType == TEXT("set_pose_search_schema_channel_weight") ||
+                     CommandType == TEXT("set_pose_search_schema_trajectory_sample") ||
                      CommandType == TEXT("add_chooser_table_row") ||
                      CommandType == TEXT("remove_chooser_table_row") ||
                      CommandType == TEXT("set_animation_properties"))

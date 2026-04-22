@@ -42,9 +42,13 @@ private:
     TSharedPtr<FJsonObject> HandleSetPoseSearchDatabaseSchema(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddPoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleRemovePoseSearchDatabaseAnimation(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetPoseSearchDatabaseCostBiases(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetPoseSearchDatabaseAnimationFlags(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetPoseSearchSchemaSettings(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddPoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleRemovePoseSearchSchemaChannel(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetPoseSearchSchemaChannelWeight(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetPoseSearchSchemaTrajectorySample(const TSharedPtr<FJsonObject>& Params);
 
     // Chooser Table write tools
     TSharedPtr<FJsonObject> HandleAddChooserTableRow(const TSharedPtr<FJsonObject>& Params);

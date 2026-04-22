@@ -157,6 +157,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     {
         return HandleRemovePoseSearchDatabaseAnimation(Params);
     }
+    if (CommandType == TEXT("set_pose_search_database_cost_biases"))
+    {
+        return HandleSetPoseSearchDatabaseCostBiases(Params);
+    }
+    if (CommandType == TEXT("set_pose_search_database_animation_flags"))
+    {
+        return HandleSetPoseSearchDatabaseAnimationFlags(Params);
+    }
     if (CommandType == TEXT("set_pose_search_schema_settings"))
     {
         return HandleSetPoseSearchSchemaSettings(Params);
@@ -168,6 +176,14 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("remove_pose_search_schema_channel"))
     {
         return HandleRemovePoseSearchSchemaChannel(Params);
+    }
+    if (CommandType == TEXT("set_pose_search_schema_channel_weight"))
+    {
+        return HandleSetPoseSearchSchemaChannelWeight(Params);
+    }
+    if (CommandType == TEXT("set_pose_search_schema_trajectory_sample"))
+    {
+        return HandleSetPoseSearchSchemaTrajectorySample(Params);
     }
     if (CommandType == TEXT("add_chooser_table_row"))
     {
@@ -2042,6 +2058,187 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchDatab
     return Result;
 }
 
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabaseCostBiases(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase not found"));
+
+    Database->Modify();
+
+    TArray<FString> ModifiedFields;
+    auto TrySetFloat = [&](const TCHAR* JsonKey, const TCHAR* PropName)
+    {
+        double Value = 0.0;
+        if (Params->TryGetNumberField(JsonKey, Value))
+        {
+            if (FFloatProperty* Prop = CastField<FFloatProperty>(Database->GetClass()->FindPropertyByName(PropName)))
+            {
+                Prop->SetPropertyValue_InContainer(Database, (float)Value);
+                ModifiedFields.Add(FString(PropName));
+            }
+        }
+    };
+
+    TrySetFloat(TEXT("continuing_pose_cost_bias"), TEXT("ContinuingPoseCostBias"));
+    TrySetFloat(TEXT("base_cost_bias"), TEXT("BaseCostBias"));
+    TrySetFloat(TEXT("looping_cost_bias"), TEXT("LoopingCostBias"));
+
+    if (ModifiedFields.Num() > 0)
+    {
+        Database->MarkPackageDirty();
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("modified_count"), ModifiedFields.Num());
+
+    TArray<TSharedPtr<FJsonValue>> FieldsArray;
+    for (const FString& F : ModifiedFields)
+    {
+        FieldsArray.Add(MakeShared<FJsonValueString>(F));
+    }
+    Result->SetArrayField(TEXT("modified_fields"), FieldsArray);
+
+    // Read back current values
+    auto GetFloat = [&](const TCHAR* PropName) -> float
+    {
+        if (FFloatProperty* Prop = CastField<FFloatProperty>(Database->GetClass()->FindPropertyByName(PropName)))
+        {
+            return Prop->GetPropertyValue_InContainer(Database);
+        }
+        return 0.f;
+    };
+    Result->SetNumberField(TEXT("continuing_pose_cost_bias"), GetFloat(TEXT("ContinuingPoseCostBias")));
+    Result->SetNumberField(TEXT("base_cost_bias"), GetFloat(TEXT("BaseCostBias")));
+    Result->SetNumberField(TEXT("looping_cost_bias"), GetFloat(TEXT("LoopingCostBias")));
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabaseAnimationFlags(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double IndexD = -1;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("index"), IndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+    int32 Index = (int32)IndexD;
+
+    UPoseSearchDatabase* Database = LoadObject<UPoseSearchDatabase>(nullptr, *AssetPath);
+    if (!Database)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchDatabase not found"));
+
+    FArrayProperty* ArrayProp = CastField<FArrayProperty>(Database->GetClass()->FindPropertyByName(TEXT("DatabaseAnimationAssets")));
+    if (!ArrayProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("DatabaseAnimationAssets property not found"));
+
+    FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Database));
+    if (Index < 0 || Index >= ArrayHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Index %d out of range (0..%d)"), Index, ArrayHelper.Num() - 1));
+
+    void* ElemPtr = ArrayHelper.GetRawPtr(Index);
+    const FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner);
+    if (!InnerStruct || !InnerStruct->Struct)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid DatabaseAnimationAssets element struct"));
+
+    const UStruct* S = InnerStruct->Struct;
+    Database->Modify();
+
+    TArray<FString> ModifiedFields;
+
+#if WITH_EDITORONLY_DATA
+    // bEnabled
+    bool bEnabled = false;
+    if (Params->TryGetBoolField(TEXT("enabled"), bEnabled))
+    {
+        if (FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bEnabled"))))
+        {
+            Prop->SetPropertyValue_InContainer(ElemPtr, bEnabled);
+            ModifiedFields.Add(TEXT("bEnabled"));
+        }
+    }
+
+    // bDisableReselection
+    bool bDisableReselection = false;
+    if (Params->TryGetBoolField(TEXT("disable_reselection"), bDisableReselection))
+    {
+        if (FBoolProperty* Prop = CastField<FBoolProperty>(S->FindPropertyByName(TEXT("bDisableReselection"))))
+        {
+            Prop->SetPropertyValue_InContainer(ElemPtr, bDisableReselection);
+            ModifiedFields.Add(TEXT("bDisableReselection"));
+        }
+    }
+
+    // MirrorOption (enum, string)
+    FString MirrorOptionStr;
+    if (Params->TryGetStringField(TEXT("mirror_option"), MirrorOptionStr))
+    {
+        if (FEnumProperty* EnumProp = CastField<FEnumProperty>(S->FindPropertyByName(TEXT("MirrorOption"))))
+        {
+            UEnum* EnumType = EnumProp->GetEnum();
+            if (EnumType)
+            {
+                int64 EnumValue = EnumType->GetValueByNameString(MirrorOptionStr);
+                if (EnumValue == INDEX_NONE)
+                {
+                    // Try with short name prefix
+                    FString FullName = FString::Printf(TEXT("EPoseSearchMirrorOption::%s"), *MirrorOptionStr);
+                    EnumValue = EnumType->GetValueByNameString(FullName);
+                }
+                if (EnumValue != INDEX_NONE)
+                {
+                    void* EnumPtr = EnumProp->ContainerPtrToValuePtr<void>(ElemPtr);
+                    EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(EnumPtr, EnumValue);
+                    ModifiedFields.Add(TEXT("MirrorOption"));
+                }
+            }
+        }
+    }
+
+    // SamplingRange
+    double RangeMin = 0.0, RangeMax = 0.0;
+    bool bHasRangeMin = Params->TryGetNumberField(TEXT("sampling_range_min"), RangeMin);
+    bool bHasRangeMax = Params->TryGetNumberField(TEXT("sampling_range_max"), RangeMax);
+    if (bHasRangeMin || bHasRangeMax)
+    {
+        if (FStructProperty* RangeProp = CastField<FStructProperty>(S->FindPropertyByName(TEXT("SamplingRange"))))
+        {
+            FFloatInterval* Interval = RangeProp->ContainerPtrToValuePtr<FFloatInterval>(ElemPtr);
+            if (Interval)
+            {
+                if (bHasRangeMin) Interval->Min = (float)RangeMin;
+                if (bHasRangeMax) Interval->Max = (float)RangeMax;
+                ModifiedFields.Add(TEXT("SamplingRange"));
+            }
+        }
+    }
+#endif
+
+    if (ModifiedFields.Num() > 0)
+    {
+        Database->MarkPackageDirty();
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("index"), Index);
+    Result->SetNumberField(TEXT("modified_count"), ModifiedFields.Num());
+    TArray<TSharedPtr<FJsonValue>> FieldsArray;
+    for (const FString& F : ModifiedFields)
+    {
+        FieldsArray.Add(MakeShared<FJsonValueString>(F));
+    }
+    Result->SetArrayField(TEXT("modified_fields"), FieldsArray);
+    return Result;
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // PSS Write Tools
 // ══════════════════════════════════════════════════════════════════════
@@ -2351,6 +2548,161 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchSchem
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetBoolField(TEXT("success"), true);
     Result->SetNumberField(TEXT("removed_index"), Index);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaChannelWeight(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double ChannelIndexD = 0;
+    double WeightD = 0.0;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("channel_index"), ChannelIndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'channel_index'"));
+    if (!Params->TryGetNumberField(TEXT("weight"), WeightD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'weight'"));
+
+    int32 ChannelIndex = (int32)ChannelIndexD;
+    float Weight = (float)WeightD;
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    FArrayProperty* ChannelsProp = CastField<FArrayProperty>(Schema->GetClass()->FindPropertyByName(TEXT("Channels")));
+    if (!ChannelsProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channels property not found"));
+
+    FScriptArrayHelper ArrayHelper(ChannelsProp, ChannelsProp->ContainerPtrToValuePtr<void>(Schema));
+    if (ChannelIndex < 0 || ChannelIndex >= ArrayHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Channel index %d out of range (0..%d)"), ChannelIndex, ArrayHelper.Num() - 1));
+
+    FObjectProperty* InnerObjectProp = CastField<FObjectProperty>(ChannelsProp->Inner);
+    if (!InnerObjectProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channels inner is not ObjectProperty"));
+
+    UObject* ChannelObject = InnerObjectProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(ChannelIndex));
+    if (!ChannelObject)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channel UObject is null"));
+
+    FFloatProperty* WeightProp = CastField<FFloatProperty>(ChannelObject->GetClass()->FindPropertyByName(TEXT("Weight")));
+    if (!WeightProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Channel class %s has no Weight property"), *ChannelObject->GetClass()->GetName()));
+
+    Schema->Modify();
+    ChannelObject->Modify();
+    WeightProp->SetPropertyValue_InContainer(ChannelObject, Weight);
+    Schema->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("channel_index"), ChannelIndex);
+    Result->SetStringField(TEXT("channel_class"), ChannelObject->GetClass()->GetName());
+    Result->SetNumberField(TEXT("weight"), WeightProp->GetPropertyValue_InContainer(ChannelObject));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaTrajectorySample(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    double ChannelIndexD = 0;
+    double SampleIndexD = 0;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+    if (!Params->TryGetNumberField(TEXT("channel_index"), ChannelIndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'channel_index'"));
+    if (!Params->TryGetNumberField(TEXT("sample_index"), SampleIndexD))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'sample_index'"));
+
+    int32 ChannelIndex = (int32)ChannelIndexD;
+    int32 SampleIndex = (int32)SampleIndexD;
+
+    UPoseSearchSchema* Schema = LoadObject<UPoseSearchSchema>(nullptr, *AssetPath);
+    if (!Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("PoseSearchSchema not found"));
+
+    FArrayProperty* ChannelsProp = CastField<FArrayProperty>(Schema->GetClass()->FindPropertyByName(TEXT("Channels")));
+    if (!ChannelsProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channels property not found"));
+
+    FScriptArrayHelper ChannelsHelper(ChannelsProp, ChannelsProp->ContainerPtrToValuePtr<void>(Schema));
+    if (ChannelIndex < 0 || ChannelIndex >= ChannelsHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Channel index %d out of range (0..%d)"), ChannelIndex, ChannelsHelper.Num() - 1));
+
+    FObjectProperty* InnerObjectProp = CastField<FObjectProperty>(ChannelsProp->Inner);
+    UObject* ChannelObject = InnerObjectProp ? InnerObjectProp->GetObjectPropertyValue(ChannelsHelper.GetRawPtr(ChannelIndex)) : nullptr;
+    if (!ChannelObject)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Channel UObject is null"));
+
+    FArrayProperty* SamplesProp = CastField<FArrayProperty>(ChannelObject->GetClass()->FindPropertyByName(TEXT("Samples")));
+    if (!SamplesProp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Channel class %s has no Samples property (not a Trajectory channel?)"), *ChannelObject->GetClass()->GetName()));
+
+    FScriptArrayHelper SamplesHelper(SamplesProp, SamplesProp->ContainerPtrToValuePtr<void>(ChannelObject));
+    if (SampleIndex < 0 || SampleIndex >= SamplesHelper.Num())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Sample index %d out of range (0..%d)"), SampleIndex, SamplesHelper.Num() - 1));
+
+    FStructProperty* InnerStruct = CastField<FStructProperty>(SamplesProp->Inner);
+    if (!InnerStruct || !InnerStruct->Struct)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid Samples element struct"));
+
+    const UStruct* SampleStructType = InnerStruct->Struct;
+    void* SampleElemPtr = SamplesHelper.GetRawPtr(SampleIndex);
+
+    Schema->Modify();
+    ChannelObject->Modify();
+
+    TArray<FString> ModifiedFields;
+
+    double OffsetD = 0.0;
+    if (Params->TryGetNumberField(TEXT("offset"), OffsetD))
+    {
+        if (FFloatProperty* Prop = CastField<FFloatProperty>(SampleStructType->FindPropertyByName(TEXT("Offset"))))
+        {
+            Prop->SetPropertyValue_InContainer(SampleElemPtr, (float)OffsetD);
+            ModifiedFields.Add(TEXT("Offset"));
+        }
+    }
+
+    double WeightD = 0.0;
+    if (Params->TryGetNumberField(TEXT("weight"), WeightD))
+    {
+#if WITH_EDITORONLY_DATA
+        if (FFloatProperty* Prop = CastField<FFloatProperty>(SampleStructType->FindPropertyByName(TEXT("Weight"))))
+        {
+            Prop->SetPropertyValue_InContainer(SampleElemPtr, (float)WeightD);
+            ModifiedFields.Add(TEXT("Weight"));
+        }
+#endif
+    }
+
+    double FlagsD = 0.0;
+    if (Params->TryGetNumberField(TEXT("flags"), FlagsD))
+    {
+        if (FIntProperty* Prop = CastField<FIntProperty>(SampleStructType->FindPropertyByName(TEXT("Flags"))))
+        {
+            Prop->SetPropertyValue_InContainer(SampleElemPtr, (int32)FlagsD);
+            ModifiedFields.Add(TEXT("Flags"));
+        }
+    }
+
+    if (ModifiedFields.Num() > 0)
+    {
+        Schema->MarkPackageDirty();
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetNumberField(TEXT("channel_index"), ChannelIndex);
+    Result->SetNumberField(TEXT("sample_index"), SampleIndex);
+    Result->SetNumberField(TEXT("modified_count"), ModifiedFields.Num());
+    TArray<TSharedPtr<FJsonValue>> FieldsArray;
+    for (const FString& F : ModifiedFields)
+    {
+        FieldsArray.Add(MakeShared<FJsonValueString>(F));
+    }
+    Result->SetArrayField(TEXT("modified_fields"), FieldsArray);
     return Result;
 }
 
