@@ -22,7 +22,12 @@ private:
     TSharedPtr<FJsonObject> HandleGetMontageCompositeInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFindAnimationsForSkeleton(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimBlueprintInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleListAnimationBlueprintsForSkeleton(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSkeletonBoneHierarchy(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetSkeletonReferencePose(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetSkeletalMeshInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetPhysicsAssetInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetAssetReferences(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleListChooserTables(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSkeletonRetargetModes(const TSharedPtr<FJsonObject>& Params);

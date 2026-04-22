@@ -335,6 +335,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_montage_composite_info") ||
                      CommandType == TEXT("find_animations_for_skeleton") ||
                      CommandType == TEXT("get_anim_blueprint_info") ||
+                     CommandType == TEXT("list_animation_blueprints_for_skeleton") ||
+                     CommandType == TEXT("get_skeleton_reference_pose") ||
+                     CommandType == TEXT("get_skeletal_mesh_info") ||
+                     CommandType == TEXT("get_physics_asset_info") ||
+                     CommandType == TEXT("get_asset_references") ||
                      CommandType == TEXT("get_skeleton_bone_hierarchy") ||
                      CommandType == TEXT("list_chooser_tables") ||
                      CommandType == TEXT("get_chooser_table_info") ||

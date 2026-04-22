@@ -11,8 +11,20 @@
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "AnimationBlueprintLibrary.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "PhysicsEngine/SkeletalBodySetup.h"
+#include "PhysicsEngine/ConstraintInstance.h"
+#include "PhysicsEngine/PhysicsConstraintTemplate.h"
+#include "AnimGraphNode_Base.h"
+#include "AnimGraphNode_StateMachineBase.h"
+#include "AssetRegistry/AssetData.h"
+#include "AnimationGraph.h"
+#include "AnimationStateMachineGraph.h"
+#include "Materials/MaterialInterface.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/ARFilter.h"
@@ -102,6 +114,26 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_anim_blueprint_info"))
     {
         return HandleGetAnimBlueprintInfo(Params);
+    }
+    if (CommandType == TEXT("list_animation_blueprints_for_skeleton"))
+    {
+        return HandleListAnimationBlueprintsForSkeleton(Params);
+    }
+    if (CommandType == TEXT("get_skeleton_reference_pose"))
+    {
+        return HandleGetSkeletonReferencePose(Params);
+    }
+    if (CommandType == TEXT("get_skeletal_mesh_info"))
+    {
+        return HandleGetSkeletalMeshInfo(Params);
+    }
+    if (CommandType == TEXT("get_physics_asset_info"))
+    {
+        return HandleGetPhysicsAssetInfo(Params);
+    }
+    if (CommandType == TEXT("get_asset_references"))
+    {
+        return HandleGetAssetReferences(Params);
     }
     if (CommandType == TEXT("get_skeleton_bone_hierarchy"))
     {
@@ -680,6 +712,74 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimBlueprintInfo(
     }
 #endif
 
+    // --- AnimGraph walk: state machines + directly referenced animation assets ---
+    // Walk every function graph in the blueprint. AnimGraph nodes (UAnimGraphNode_Base) only
+    // appear inside AnimGraph-style graphs, so filtering by node type naturally skips
+    // regular K2 function graphs. State machines are UAnimGraphNode_StateMachineBase;
+    // directly-used assets come from UAnimGraphNode_Base::GetAnimationAsset() (covers
+    // AssetPlayer nodes, BlendSpace player nodes, etc.). This does NOT cover assets
+    // picked at runtime (Chooser / property binding / PoseSearchDatabase).
+    TArray<TSharedPtr<FJsonValue>> StateMachinesArray;
+    TSet<FString> SeenAssetPaths;
+    TArray<TSharedPtr<FJsonValue>> UsedAssetsArray;
+
+    auto WalkGraphNodes = [&](UEdGraph* Graph)
+    {
+        if (!Graph) return;
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            if (UAnimGraphNode_StateMachineBase* SMNode = Cast<UAnimGraphNode_StateMachineBase>(Node))
+            {
+                TSharedPtr<FJsonObject> SMObj = MakeShared<FJsonObject>();
+                SMObj->SetStringField(TEXT("node_name"), SMNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+                // EditorStateMachineGraph holds the sub-graph with UAnimStateNodeBase nodes.
+                int32 StateCount = 0;
+                // EditorStateMachineGraph is TObjectPtr<UAnimationStateMachineGraph>; .Get() gives the raw derived pointer
+                // which implicitly casts to UEdGraph* (UAnimationStateMachineGraph is a UEdGraph subclass).
+                if (UEdGraph* SMGraph = SMNode->EditorStateMachineGraph.Get())
+                {
+                    for (UEdGraphNode* SubNode : SMGraph->Nodes)
+                    {
+                        // Count state-like nodes (UAnimStateNodeBase / UAnimStateNode / UAnimStateAliasNode / UAnimStateConduitNode).
+                        // We match by class name to avoid including the private AnimationStateMachineGraph header here.
+                        if (SubNode && SubNode->GetClass()->GetName().Contains(TEXT("AnimState")))
+                        {
+                            ++StateCount;
+                        }
+                    }
+                    SMObj->SetStringField(TEXT("sub_graph_name"), SMGraph->GetName());
+                }
+                SMObj->SetNumberField(TEXT("state_count"), StateCount);
+                StateMachinesArray.Add(MakeShared<FJsonValueObject>(SMObj));
+            }
+
+            if (UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node))
+            {
+                if (UAnimationAsset* Asset = AnimNode->GetAnimationAsset())
+                {
+                    const FString AssetPath = Asset->GetPathName();
+                    if (!SeenAssetPaths.Contains(AssetPath))
+                    {
+                        SeenAssetPaths.Add(AssetPath);
+                        TSharedPtr<FJsonObject> AObj = MakeShared<FJsonObject>();
+                        AObj->SetStringField(TEXT("name"), Asset->GetName());
+                        AObj->SetStringField(TEXT("path"), AssetPath);
+                        AObj->SetStringField(TEXT("class"), Asset->GetClass()->GetName());
+                        UsedAssetsArray.Add(MakeShared<FJsonValueObject>(AObj));
+                    }
+                }
+            }
+        }
+    };
+
+    for (UEdGraph* Graph : AnimBP->FunctionGraphs)
+    {
+        WalkGraphNodes(Graph);
+    }
+
+    Result->SetArrayField(TEXT("state_machines"), StateMachinesArray);
+    Result->SetArrayField(TEXT("used_animation_assets"), UsedAssetsArray);
+
     return Result;
 }
 
@@ -763,6 +863,470 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonBoneHierar
     Result->SetArrayField(TEXT("bones"), BonesJson);
     Result->SetNumberField(TEXT("virtual_bone_count"), VirtualBones.Num());
     Result->SetArrayField(TEXT("virtual_bones"), VirtualJson);
+    return Result;
+}
+
+namespace
+{
+    TSharedPtr<FJsonObject> TransformToJson(const FTransform& T)
+    {
+        TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+        const FVector Loc = T.GetLocation();
+        const FQuat  Rot = T.GetRotation();
+        const FRotator Euler = Rot.Rotator();
+        const FVector Scale = T.GetScale3D();
+
+        TArray<TSharedPtr<FJsonValue>> LocArr = {
+            MakeShared<FJsonValueNumber>(Loc.X), MakeShared<FJsonValueNumber>(Loc.Y), MakeShared<FJsonValueNumber>(Loc.Z)
+        };
+        Out->SetArrayField(TEXT("translation"), LocArr);
+
+        TArray<TSharedPtr<FJsonValue>> QuatArr = {
+            MakeShared<FJsonValueNumber>(Rot.X), MakeShared<FJsonValueNumber>(Rot.Y),
+            MakeShared<FJsonValueNumber>(Rot.Z), MakeShared<FJsonValueNumber>(Rot.W)
+        };
+        Out->SetArrayField(TEXT("rotation_quat"), QuatArr);
+
+        TArray<TSharedPtr<FJsonValue>> EulerArr = {
+            MakeShared<FJsonValueNumber>(Euler.Pitch),
+            MakeShared<FJsonValueNumber>(Euler.Yaw),
+            MakeShared<FJsonValueNumber>(Euler.Roll)
+        };
+        Out->SetArrayField(TEXT("rotation_euler_pyr"), EulerArr);
+
+        TArray<TSharedPtr<FJsonValue>> ScaleArr = {
+            MakeShared<FJsonValueNumber>(Scale.X), MakeShared<FJsonValueNumber>(Scale.Y), MakeShared<FJsonValueNumber>(Scale.Z)
+        };
+        Out->SetArrayField(TEXT("scale"), ScaleArr);
+
+        return Out;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonReferencePose(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path' parameter"));
+    }
+
+    FString Space;
+    Params->TryGetStringField(TEXT("space"), Space);
+    if (Space.IsEmpty())
+    {
+        Space = TEXT("Local");
+    }
+    const bool bComponent = Space.Equals(TEXT("Component"), ESearchCase::IgnoreCase);
+    if (!bComponent && !Space.Equals(TEXT("Local"), ESearchCase::IgnoreCase))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid 'space' value: %s (expected 'Local' or 'Component')"), *Space));
+    }
+
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+    if (!Skeleton)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton asset not found: %s"), *SkeletonPath));
+    }
+
+    const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+    const TArray<FMeshBoneInfo>& Infos = RefSkeleton.GetRawRefBoneInfo();
+    const TArray<FTransform>& LocalPoses = RefSkeleton.GetRawRefBonePose();
+    const int32 Num = RefSkeleton.GetRawBoneNum();
+
+    // Component-space poses are composed top-down: child_component = child_local * parent_component.
+    // We pre-compute them in one pass since FMeshBoneInfo guarantees a parent is stored at a lower index.
+    TArray<FTransform> ComponentPoses;
+    if (bComponent)
+    {
+        ComponentPoses.SetNum(Num);
+        for (int32 i = 0; i < Num; ++i)
+        {
+            const int32 Parent = Infos[i].ParentIndex;
+            ComponentPoses[i] = (Parent == INDEX_NONE)
+                ? LocalPoses[i]
+                : LocalPoses[i] * ComponentPoses[Parent];
+        }
+    }
+
+    TArray<TSharedPtr<FJsonValue>> BonesJson;
+    BonesJson.Reserve(Num);
+    for (int32 i = 0; i < Num; ++i)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("name"), Infos[i].Name.ToString());
+        Entry->SetNumberField(TEXT("parent_index"), Infos[i].ParentIndex);
+
+        const FTransform& T = bComponent ? ComponentPoses[i] : LocalPoses[i];
+        const TSharedPtr<FJsonObject> TJson = TransformToJson(T);
+        // Merge the transform fields directly into the entry so the JSON is flat.
+        for (const auto& Pair : TJson->Values)
+        {
+            Entry->SetField(Pair.Key, Pair.Value);
+        }
+        BonesJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+    Result->SetStringField(TEXT("space"), bComponent ? TEXT("Component") : TEXT("Local"));
+    Result->SetNumberField(TEXT("bone_count"), Num);
+    Result->SetArrayField(TEXT("bones"), BonesJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletalMeshInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString MeshPath;
+    if (!Params->TryGetStringField(TEXT("mesh_path"), MeshPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mesh_path' parameter"));
+    }
+
+    USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *MeshPath);
+    if (!Mesh)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SkeletalMesh asset not found: %s"), *MeshPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("name"), Mesh->GetName());
+    Result->SetStringField(TEXT("path"), Mesh->GetPathName());
+
+    // Skeleton
+    if (USkeleton* Skel = Mesh->GetSkeleton())
+    {
+        Result->SetStringField(TEXT("skeleton_path"), Skel->GetPathName());
+    }
+    else
+    {
+        Result->SetField(TEXT("skeleton_path"), MakeShared<FJsonValueNull>());
+    }
+
+    // Default PhysicsAsset
+    if (UPhysicsAsset* PA = Mesh->GetPhysicsAsset())
+    {
+        Result->SetStringField(TEXT("default_physics_asset_path"), PA->GetPathName());
+    }
+    else
+    {
+        Result->SetField(TEXT("default_physics_asset_path"), MakeShared<FJsonValueNull>());
+    }
+
+    // Post Process AnimBlueprint (property actually belongs to SKM, not AnimBP — placed here per requirement doc's real semantics)
+    if (TSubclassOf<UAnimInstance> PostAnimClass = Mesh->GetPostProcessAnimBlueprint())
+    {
+        Result->SetStringField(TEXT("post_process_anim_blueprint_class"), PostAnimClass->GetPathName());
+    }
+    else
+    {
+        Result->SetField(TEXT("post_process_anim_blueprint_class"), MakeShared<FJsonValueNull>());
+    }
+
+    // Bounds (import bounds from imported mesh; we use the mesh's cached bounds)
+    const FBoxSphereBounds Bounds = Mesh->GetImportedBounds();
+    const FVector Origin = Bounds.Origin;
+    const FVector Extent = Bounds.BoxExtent;
+    const FVector BoundsMin = Origin - Extent;
+    const FVector BoundsMax = Origin + Extent;
+
+    TSharedPtr<FJsonObject> BBoxJson = MakeShared<FJsonObject>();
+    {
+        TArray<TSharedPtr<FJsonValue>> MinArr = {
+            MakeShared<FJsonValueNumber>(BoundsMin.X), MakeShared<FJsonValueNumber>(BoundsMin.Y), MakeShared<FJsonValueNumber>(BoundsMin.Z)
+        };
+        TArray<TSharedPtr<FJsonValue>> MaxArr = {
+            MakeShared<FJsonValueNumber>(BoundsMax.X), MakeShared<FJsonValueNumber>(BoundsMax.Y), MakeShared<FJsonValueNumber>(BoundsMax.Z)
+        };
+        BBoxJson->SetArrayField(TEXT("min"), MinArr);
+        BBoxJson->SetArrayField(TEXT("max"), MaxArr);
+    }
+    Result->SetObjectField(TEXT("bounding_box"), BBoxJson);
+
+    TArray<TSharedPtr<FJsonValue>> OriginArr = {
+        MakeShared<FJsonValueNumber>(Origin.X), MakeShared<FJsonValueNumber>(Origin.Y), MakeShared<FJsonValueNumber>(Origin.Z)
+    };
+    Result->SetArrayField(TEXT("bounds_origin"), OriginArr);
+
+    TArray<TSharedPtr<FJsonValue>> ExtentArr = {
+        MakeShared<FJsonValueNumber>(Extent.X), MakeShared<FJsonValueNumber>(Extent.Y), MakeShared<FJsonValueNumber>(Extent.Z)
+    };
+    Result->SetArrayField(TEXT("bounds_extent"), ExtentArr);
+
+    // Height is the Z-span of the box extent doubled (extent is half-size), in the mesh's import space.
+    Result->SetNumberField(TEXT("approximate_height_cm"), Extent.Z * 2.0);
+
+    // LOD count (includes LOD0)
+    Result->SetNumberField(TEXT("lod_count"), Mesh->GetLODNum());
+
+    // Material slots
+    TArray<TSharedPtr<FJsonValue>> MatArr;
+    const TArray<FSkeletalMaterial>& Materials = Mesh->GetMaterials();
+    for (int32 i = 0; i < Materials.Num(); ++i)
+    {
+        const FSkeletalMaterial& SkMat = Materials[i];
+        TSharedPtr<FJsonObject> MatObj = MakeShared<FJsonObject>();
+        MatObj->SetNumberField(TEXT("index"), i);
+        MatObj->SetStringField(TEXT("slot_name"), SkMat.MaterialSlotName.ToString());
+        MatObj->SetStringField(TEXT("material_path"), SkMat.MaterialInterface ? SkMat.MaterialInterface->GetPathName() : FString());
+        MatArr.Add(MakeShared<FJsonValueObject>(MatObj));
+    }
+    Result->SetArrayField(TEXT("material_slots"), MatArr);
+
+    // Sockets defined on the mesh itself (separate from Skeleton sockets).
+    // Call through the const overload to get raw USkeletalMeshSocket*.
+    TArray<TSharedPtr<FJsonValue>> SocketArr;
+    for (USkeletalMeshSocket* Socket : const_cast<const USkeletalMesh*>(Mesh)->GetMeshOnlySocketList())
+    {
+        if (!Socket) continue;
+        TSharedPtr<FJsonObject> SockObj = MakeShared<FJsonObject>();
+        SockObj->SetStringField(TEXT("name"), Socket->SocketName.ToString());
+        SockObj->SetStringField(TEXT("bone_name"), Socket->BoneName.ToString());
+        SocketArr.Add(MakeShared<FJsonValueObject>(SockObj));
+    }
+    Result->SetArrayField(TEXT("socket_names"), SocketArr);
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetPhysicsAssetInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UPhysicsAsset* PhysAsset = LoadObject<UPhysicsAsset>(nullptr, *AssetPath);
+    if (!PhysAsset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("PhysicsAsset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("name"), PhysAsset->GetName());
+    Result->SetStringField(TEXT("path"), PhysAsset->GetPathName());
+
+    // Preview mesh (editor-only asset reference; used by PhAT)
+    if (USkeletalMesh* Preview = PhysAsset->GetPreviewMesh())
+    {
+        Result->SetStringField(TEXT("preview_skeletal_mesh"), Preview->GetPathName());
+    }
+    else
+    {
+        Result->SetField(TEXT("preview_skeletal_mesh"), MakeShared<FJsonValueNull>());
+    }
+
+    // Bodies
+    TArray<TSharedPtr<FJsonValue>> BodiesJson;
+    for (USkeletalBodySetup* Body : PhysAsset->SkeletalBodySetups)
+    {
+        if (!Body) continue;
+        TSharedPtr<FJsonObject> BodyObj = MakeShared<FJsonObject>();
+        BodyObj->SetStringField(TEXT("bone_name"), Body->BoneName.ToString());
+
+        FString PhysicsTypeStr;
+        switch (Body->PhysicsType)
+        {
+            case PhysType_Default:   PhysicsTypeStr = TEXT("Default"); break;
+            case PhysType_Kinematic: PhysicsTypeStr = TEXT("Kinematic"); break;
+            case PhysType_Simulated: PhysicsTypeStr = TEXT("Simulated"); break;
+            default:                 PhysicsTypeStr = TEXT("Unknown"); break;
+        }
+        BodyObj->SetStringField(TEXT("physics_type"), PhysicsTypeStr);
+
+        // DefaultInstance carries the per-body physical settings
+        const FBodyInstance& Inst = Body->DefaultInstance;
+        BodyObj->SetBoolField(TEXT("simulate_physics"), Inst.bSimulatePhysics);
+        BodyObj->SetNumberField(TEXT("mass_override"), Inst.GetMassOverride());
+        BodyObj->SetNumberField(TEXT("linear_damping"), Inst.LinearDamping);
+        BodyObj->SetNumberField(TEXT("angular_damping"), Inst.AngularDamping);
+        BodyObj->SetStringField(TEXT("collision_response"),
+            Inst.GetCollisionEnabled() == ECollisionEnabled::NoCollision                    ? TEXT("NoCollision") :
+            Inst.GetCollisionEnabled() == ECollisionEnabled::QueryOnly                      ? TEXT("QueryOnly") :
+            Inst.GetCollisionEnabled() == ECollisionEnabled::PhysicsOnly                    ? TEXT("PhysicsOnly") :
+            Inst.GetCollisionEnabled() == ECollisionEnabled::QueryAndPhysics                ? TEXT("QueryAndPhysics") :
+            Inst.GetCollisionEnabled() == ECollisionEnabled::ProbeOnly                      ? TEXT("ProbeOnly") :
+            Inst.GetCollisionEnabled() == ECollisionEnabled::QueryAndProbe                  ? TEXT("QueryAndProbe") :
+                                                                                              TEXT("Unknown"));
+
+        // Primitive counts per shape class
+        const FKAggregateGeom& Agg = Body->AggGeom;
+        BodyObj->SetNumberField(TEXT("num_sphere"),  Agg.SphereElems.Num());
+        BodyObj->SetNumberField(TEXT("num_box"),     Agg.BoxElems.Num());
+        BodyObj->SetNumberField(TEXT("num_capsule"), Agg.SphylElems.Num());
+        BodyObj->SetNumberField(TEXT("num_convex"),  Agg.ConvexElems.Num());
+        BodyObj->SetNumberField(TEXT("num_tapered_capsule"), Agg.TaperedCapsuleElems.Num());
+
+        BodiesJson.Add(MakeShared<FJsonValueObject>(BodyObj));
+    }
+    Result->SetArrayField(TEXT("bodies"), BodiesJson);
+    Result->SetNumberField(TEXT("body_count"), BodiesJson.Num());
+
+    // Constraints
+    TArray<TSharedPtr<FJsonValue>> ConstraintsJson;
+    for (UPhysicsConstraintTemplate* Constraint : PhysAsset->ConstraintSetup)
+    {
+        if (!Constraint) continue;
+        const FConstraintInstance& CI = Constraint->DefaultInstance;
+        TSharedPtr<FJsonObject> CObj = MakeShared<FJsonObject>();
+        CObj->SetStringField(TEXT("constraint_name"), CI.JointName.ToString());
+        CObj->SetStringField(TEXT("bone1"), CI.ConstraintBone1.ToString());
+        CObj->SetStringField(TEXT("bone2"), CI.ConstraintBone2.ToString());
+
+        // Linear limit size (single radius for locked/limited axes). Motion type per axis is also useful.
+        CObj->SetNumberField(TEXT("linear_limit_size"), CI.GetLinearLimit());
+        CObj->SetNumberField(TEXT("angular_swing1_limit_deg"), CI.GetAngularSwing1Limit());
+        CObj->SetNumberField(TEXT("angular_swing2_limit_deg"), CI.GetAngularSwing2Limit());
+        CObj->SetNumberField(TEXT("angular_twist_limit_deg"),  CI.GetAngularTwistLimit());
+
+        ConstraintsJson.Add(MakeShared<FJsonValueObject>(CObj));
+    }
+    Result->SetArrayField(TEXT("constraints"), ConstraintsJson);
+    Result->SetNumberField(TEXT("constraint_count"), ConstraintsJson.Num());
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAssetReferences(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    // Asset Registry's referencer query works on package names; derive the package name from the path.
+    // Accept both "/Game/Foo/Bar" and "/Game/Foo/Bar.Bar" object paths.
+    FString PackageName = AssetPath;
+    int32 DotIdx = INDEX_NONE;
+    if (PackageName.FindChar('.', DotIdx))
+    {
+        PackageName = PackageName.Left(DotIdx);
+    }
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    TArray<FName> Referencers;
+    AssetRegistry.GetReferencers(FName(*PackageName), Referencers);
+
+    TArray<TSharedPtr<FJsonValue>> RefsJson;
+    RefsJson.Reserve(Referencers.Num());
+    for (const FName& RefPkg : Referencers)
+    {
+        // Enrich with asset class info by looking up the package contents.
+        TArray<FAssetData> AssetsInRef;
+        AssetRegistry.GetAssetsByPackageName(RefPkg, AssetsInRef);
+        if (AssetsInRef.Num() == 0)
+        {
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("package_name"), RefPkg.ToString());
+            RefsJson.Add(MakeShared<FJsonValueObject>(Obj));
+            continue;
+        }
+        for (const FAssetData& Data : AssetsInRef)
+        {
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("package_name"), RefPkg.ToString());
+            Obj->SetStringField(TEXT("asset_path"), Data.GetObjectPathString());
+            Obj->SetStringField(TEXT("asset_class"), Data.AssetClassPath.GetAssetName().ToString());
+            RefsJson.Add(MakeShared<FJsonValueObject>(Obj));
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetStringField(TEXT("package_name"), PackageName);
+    Result->SetNumberField(TEXT("referencer_count"), RefsJson.Num());
+    Result->SetArrayField(TEXT("referencers"), RefsJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListAnimationBlueprintsForSkeleton(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SkeletonPath;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), SkeletonPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path' parameter"));
+    }
+
+    FString PathFilter;
+    Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+    // Normalize to full object path (".LeafName") to match the AR Skeleton tag format.
+    FString SkeletonObjectPath = SkeletonPath;
+    {
+        int32 DotIdx = INDEX_NONE;
+        int32 SlashIdx = INDEX_NONE;
+        SkeletonObjectPath.FindLastChar('.', DotIdx);
+        SkeletonObjectPath.FindLastChar('/', SlashIdx);
+        if (DotIdx <= SlashIdx && SlashIdx != INDEX_NONE)
+        {
+            const FString LeafName = SkeletonObjectPath.Mid(SlashIdx + 1);
+            SkeletonObjectPath = SkeletonObjectPath + TEXT(".") + LeafName;
+        }
+    }
+
+    USkeleton* SkeletonObj = LoadObject<USkeleton>(nullptr, *SkeletonObjectPath);
+    if (!SkeletonObj)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Skeleton asset not found: %s"), *SkeletonPath));
+    }
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = true;
+    Filter.ClassPaths.Add(UAnimBlueprint::StaticClass()->GetClassPathName());
+    if (PathFilter.Len() > 0)
+    {
+        Filter.PackagePaths.Add(FName(*PathFilter));
+    }
+
+    TArray<FAssetData> Candidates;
+    AssetRegistry.GetAssets(Filter, Candidates);
+
+    TArray<TSharedPtr<FJsonValue>> Matched;
+    for (const FAssetData& Asset : Candidates)
+    {
+        // UAnimBlueprint exposes TargetSkeleton as an AssetRegistrySearchable UPROPERTY.
+        // The tag value format is Skeleton'/Game/Path/SK_Foo.SK_Foo'; Contains-check on the
+        // object path is robust across UE versions without needing ExportText parsing.
+        FString TagValue;
+        if (!Asset.GetTagValue<FString>(TEXT("TargetSkeleton"), TagValue))
+        {
+            continue;
+        }
+        if (!TagValue.Contains(SkeletonObjectPath))
+        {
+            continue;
+        }
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("path"), Asset.GetObjectPathString());
+        Entry->SetStringField(TEXT("name"), Asset.AssetName.ToString());
+        Entry->SetStringField(TEXT("class"), Asset.AssetClassPath.GetAssetName().ToString());
+
+        // Is this a template AnimBP? Available as an AR tag as well.
+        FString IsTemplateTag;
+        if (Asset.GetTagValue<FString>(TEXT("bIsTemplate"), IsTemplateTag))
+        {
+            Entry->SetBoolField(TEXT("is_template"), IsTemplateTag.Equals(TEXT("true"), ESearchCase::IgnoreCase));
+        }
+
+        Matched.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), SkeletonPath);
+    Result->SetStringField(TEXT("path_filter"), PathFilter);
+    Result->SetNumberField(TEXT("total_count"), Matched.Num());
+    Result->SetArrayField(TEXT("anim_blueprints"), Matched);
     return Result;
 }
 

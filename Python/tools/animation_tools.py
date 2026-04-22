@@ -274,6 +274,190 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def list_animation_blueprints_for_skeleton(
+        ctx: Context,
+        skeleton_path: str,
+        path_filter: str = "",
+    ) -> Dict[str, Any]:
+        """Find UAnimBlueprint assets that target the given Skeleton.
+
+        Mirror of `find_animations_for_skeleton` but for AnimBPs. Uses the
+        AnimBlueprint's TargetSkeleton AssetRegistrySearchable tag, so assets
+        do not have to be loaded.
+
+        Args:
+            skeleton_path: Skeleton object path (".LeafName" suffix may be omitted).
+            path_filter: Optional content root to restrict the search.
+
+        Returns:
+            Dict with skeleton_path, path_filter, total_count, and an
+            `anim_blueprints` list where each entry has {path, name, class, is_template}.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "list_animation_blueprints_for_skeleton",
+                {"skeleton_path": skeleton_path, "path_filter": path_filter},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error listing anim blueprints for skeleton: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_skeleton_reference_pose(
+        ctx: Context,
+        skeleton_path: str,
+        space: str = "Local",
+    ) -> Dict[str, Any]:
+        """Read a USkeleton's bind / reference pose bone transforms.
+
+        Args:
+            skeleton_path: Full skeleton object path.
+            space: "Local" (default) returns each bone's transform relative to its parent;
+                   "Component" returns the accumulated transform relative to the component root.
+
+        Returns:
+            Dict with skeleton_path, space, bone_count, and `bones` list.
+            Each bone entry: {index, name, parent_index,
+                              translation:[x,y,z],
+                              rotation_quat:[x,y,z,w],
+                              rotation_euler_pyr:[pitch,yaw,roll],
+                              scale:[x,y,z]}.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "get_skeleton_reference_pose",
+                {"skeleton_path": skeleton_path, "space": space},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting skeleton reference pose: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_skeletal_mesh_info(ctx: Context, mesh_path: str) -> Dict[str, Any]:
+        """Read basic info of a USkeletalMesh asset.
+
+        Args:
+            mesh_path: Full SkeletalMesh object path.
+
+        Returns:
+            Dict with:
+              name, path,
+              skeleton_path, default_physics_asset_path,
+              post_process_anim_blueprint_class: class path or null
+                  (this lives on SkeletalMesh, not AnimBlueprint — see get_anim_blueprint_info docstring),
+              bounding_box: {min:[x,y,z], max:[x,y,z]},
+              bounds_origin:[x,y,z], bounds_extent:[x,y,z],
+              approximate_height_cm: float (2 * extent.Z),
+              lod_count, material_slots:[{index, slot_name, material_path}, ...],
+              socket_names:[{name, bone_name}, ...]  (mesh-only sockets; skeleton sockets are separate).
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_skeletal_mesh_info", {"mesh_path": mesh_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting skeletal mesh info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_physics_asset_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Read structure of a UPhysicsAsset (PhAT asset).
+
+        Args:
+            asset_path: PhysicsAsset object path.
+
+        Returns:
+            Dict with name, path, preview_skeletal_mesh,
+              body_count, bodies:[{bone_name, physics_type (Default/Kinematic/Simulated),
+                                   simulate_physics, mass_override, linear_damping, angular_damping,
+                                   collision_response, num_sphere, num_box, num_capsule,
+                                   num_convex, num_tapered_capsule}, ...],
+              constraint_count, constraints:[{constraint_name, bone1, bone2,
+                                              linear_limit_size,
+                                              angular_swing1_limit_deg,
+                                              angular_swing2_limit_deg,
+                                              angular_twist_limit_deg}, ...].
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_physics_asset_info", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting physics asset info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_asset_references(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """List assets that reference the given asset (reverse dependency query).
+
+        Uses the Asset Registry's package-level Referencers. Both full object path
+        (`/Game/Foo/Bar.Bar`) and short form (`/Game/Foo/Bar`) are accepted.
+
+        Args:
+            asset_path: Target asset path.
+
+        Returns:
+            Dict with asset_path, package_name, referencer_count,
+              referencers:[{package_name, asset_path, asset_class}, ...].
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_asset_references", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting asset references: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_anim_blueprint_info(ctx: Context, blueprint_path: str) -> Dict[str, Any]:
         """Get AnimBlueprint-specific asset properties that `get_blueprint_info` does not expose.
 
@@ -305,6 +489,14 @@ def register_animation_tools(mcp: FastMCP):
               num_pose_watches:              int
               parent_anim_blueprint:         {name, path} or null
               root_anim_blueprint:           {name, path} or null (null when this AnimBP is itself the root)
+              state_machines:                [{node_name, sub_graph_name, state_count}, ...] — top-level SMs in AnimGraph
+              used_animation_assets:         [{name, path, class}, ...] — animation assets directly referenced
+                                             by AnimGraph nodes (AssetPlayer / BlendSpacePlayer / etc).
+                                             Does NOT cover Chooser-selected, binding-driven, or
+                                             PoseSearchDatabase-embedded animations.
+
+            Note: `post_process_anim_blueprint` field actually lives on USkeletalMesh
+            (not on UAnimBlueprint), so it's exposed by `get_skeletal_mesh_info` instead.
 
             Returns an error if the asset is not a UAnimBlueprint.
         """
