@@ -5,7 +5,7 @@ Editor-only tools for reading data from AnimSequence / AnimMontage assets.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from mcp.server.fastmcp import FastMCP, Context
 
 logger = logging.getLogger("UnrealMCP")
@@ -1707,5 +1707,346 @@ def register_animation_tools(mcp: FastMCP):
             return response.get("result", response)
         except Exception as e:
             return {"success": False, "message": f"Error adding solver: {e}"}
+
+    # ---------------------------------------------------------------------
+    # Batch C.2: IKRetargeter write tools (Items 10 + 11 + 12)
+    # ---------------------------------------------------------------------
+
+    @mcp.tool()
+    def create_ik_retargeter(
+        ctx: Context,
+        asset_path: str,
+        source_ik_rig_path: str = "",
+        target_ik_rig_path: str = "",
+    ) -> Dict[str, Any]:
+        """Create a new UIKRetargeter asset.
+
+        Creates the asset and (optionally) assigns source/target IKRigs via the
+        controller. The asset is dirty in-memory but NOT saved to disk.
+
+        Args:
+            asset_path: Target asset path, e.g. "/Game/.../RTG_UEFN_to_StoneGolem".
+            source_ik_rig_path: Optional source IKRig (anim copied FROM).
+            target_ik_rig_path: Optional target IKRig (anim copied TO).
+
+        Returns:
+            Dict with success, asset_path, source_assigned, target_assigned,
+            source_warning?, target_warning?, saved=False.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"asset_path": asset_path}
+            if source_ik_rig_path:
+                params["source_ik_rig_path"] = source_ik_rig_path
+            if target_ik_rig_path:
+                params["target_ik_rig_path"] = target_ik_rig_path
+            response = unreal.send_command("create_ik_retargeter", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error creating IKRetargeter: {e}"}
+
+    @mcp.tool()
+    def set_ik_retargeter_op_enabled(
+        ctx: Context,
+        asset_path: str,
+        op_index: int,
+        enabled: bool,
+    ) -> Dict[str, Any]:
+        """Toggle a retarget op on/off."""
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "set_ik_retargeter_op_enabled",
+                {"asset_path": asset_path, "op_index": op_index, "enabled": enabled},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error toggling op: {e}"}
+
+    @mcp.tool()
+    def set_ik_retargeter_op_field(
+        ctx: Context,
+        asset_path: str,
+        op_index: int,
+        field_path: str,
+        value: str,
+    ) -> Dict[str, Any]:
+        """Set any property on a retarget op via reflection (generic field setter).
+
+        Uses ImportText_Direct under the hood, so `value` must be the same text
+        format that UE accepts in T3D / asset text dumps:
+          - bool:    "true" / "false"
+          - int / float: "10" / "1.5"
+          - FName / FString: literal text
+          - enum: enum value name (e.g. "CopyGlobalPosition")
+          - FVector: "(X=1,Y=2,Z=3)"
+          - FRotator: "(Pitch=0,Yaw=90,Roll=0)"
+          - FQuat: "(X=0,Y=0,Z=0,W=1)"
+          - struct: "(Field1=...,Field2=...)"
+          - array: "(elem1,elem2)"
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            op_index: Index of the op in the stack.
+            field_path: Dotted property path on the op struct, e.g. "Settings.bCopyTranslation"
+                        or "Settings.TranslationMode".
+            value: Text-form value matching the property type (see formats above).
+
+        Returns:
+            Dict with success, asset_path, op_index, field_path, op_struct (struct name).
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "set_ik_retargeter_op_field",
+                {
+                    "asset_path": asset_path,
+                    "op_index": op_index,
+                    "field_path": field_path,
+                    "value": value,
+                },
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting op field: {e}"}
+
+    @mcp.tool()
+    def add_ik_retargeter_op(
+        ctx: Context,
+        asset_path: str,
+        op_struct_name: str,
+        insert_after_index: int = -1,
+    ) -> Dict[str, Any]:
+        """Add a retarget op to an IKRetargeter's op stack.
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            op_struct_name: Either full path ("/Script/IKRig.IKRetargetPinBoneOp")
+                or bare struct name ("IKRetargetPinBoneOp").
+            insert_after_index: If >= 0, the new op is moved to (insert_after_index + 1)
+                after being added at the bottom. UE may further constrain the final index
+                due to execution-order rules; the actual final index is in the result.
+
+        Returns:
+            Dict with success, asset_path, op_index (final position), reordered (bool).
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"asset_path": asset_path, "op_struct_name": op_struct_name}
+            if insert_after_index >= 0:
+                params["insert_after_index"] = insert_after_index
+            response = unreal.send_command("add_ik_retargeter_op", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding op: {e}"}
+
+    @mcp.tool()
+    def add_ik_retargeter_pin_bones_entry(
+        ctx: Context,
+        asset_path: str,
+        op_index: int,
+        bone_to_copy_from: str,
+        bone_to_copy_to: str,
+    ) -> Dict[str, Any]:
+        """Append an FPinBoneData entry to a Pin Bones op's BonesToPin list.
+
+        The op at `op_index` must be a Pin Bones op (FIKRetargetPinBoneOp).
+        Per-op settings (translation/rotation modes, copy flags) live on the op
+        itself, NOT per-entry — set them via `set_ik_retargeter_op_field` with
+        paths like "Settings.bCopyTranslation" or "Settings.TranslationMode".
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            op_index: Index of the Pin Bones op in the stack.
+            bone_to_copy_from: Source bone name.
+            bone_to_copy_to: Target bone name (the one whose transform gets pinned).
+
+        Returns:
+            Dict with success, asset_path, op_index, entry_index, bone_to_copy_from, bone_to_copy_to.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "add_ik_retargeter_pin_bones_entry",
+                {
+                    "asset_path": asset_path,
+                    "op_index": op_index,
+                    "bone_to_copy_from": bone_to_copy_from,
+                    "bone_to_copy_to": bone_to_copy_to,
+                },
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding pin bones entry: {e}"}
+
+    @mcp.tool()
+    def set_ik_retargeter_chain_mapping(
+        ctx: Context,
+        asset_path: str,
+        op_index: int,
+        target_chain_name: str,
+        source_chain_name: str = "",
+    ) -> Dict[str, Any]:
+        """Map a source chain to a target chain in a specific op.
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            op_index: Index of the op (must be one with chain mapping, e.g. FK Chains / IK Chains).
+            target_chain_name: The target IKRig chain to map (REQUIRED).
+            source_chain_name: The source IKRig chain to copy FROM. Empty string
+                clears the mapping (passes NAME_None to UE).
+
+        Returns:
+            Dict with success, asset_path, op_index, op_name, source_chain_name, target_chain_name.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "set_ik_retargeter_chain_mapping",
+                {
+                    "asset_path": asset_path,
+                    "op_index": op_index,
+                    "source_chain_name": source_chain_name,
+                    "target_chain_name": target_chain_name,
+                },
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting chain mapping: {e}"}
+
+    @mcp.tool()
+    def ik_retargeter_auto_map_chains(
+        ctx: Context,
+        asset_path: str,
+        op_index: int,
+        mode: str,
+    ) -> Dict[str, Any]:
+        """Auto-map chains for a specific op.
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            op_index: Index of the op containing chain mappings.
+            mode: One of:
+                  - "MapAllExact"       — exact name match, override existing
+                  - "MapOnlyEmptyExact" — exact name match, only fill empty
+                  - "MapAllFuzzy"       — closest-name (Levenshtein), override
+                  - "MapOnlyEmptyFuzzy" — closest-name, only fill empty
+                  - "ClearAll"          — clear all mappings to None
+
+        Returns:
+            Dict with success, asset_path, op_index, op_name, mode.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "ik_retargeter_auto_map_chains",
+                {"asset_path": asset_path, "op_index": op_index, "mode": mode},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error auto-mapping chains: {e}"}
+
+    @mcp.tool()
+    def set_ik_retargeter_retarget_pose(
+        ctx: Context,
+        asset_path: str,
+        side: str,
+        bone_name: str,
+        rotation_quat: Optional[List[float]] = None,
+        rotation_euler: Optional[List[float]] = None,
+    ) -> Dict[str, Any]:
+        """Set a bone rotation offset in the CURRENT retarget pose.
+
+        Args:
+            asset_path: IKRetargeter asset path.
+            side: "Source" or "Target".
+            bone_name: Bone to apply offset to.
+            rotation_quat: [x, y, z, w] quaternion. Preferred — no parsing ambiguity.
+            rotation_euler: [pitch, yaw, roll] in degrees. Used only if rotation_quat is omitted.
+
+        Returns:
+            Dict with success, asset_path, side, bone_name, applied_quat, note.
+
+        Note: Always operates on the CURRENT retarget pose. To target a different
+        pose, switch via SetCurrentRetargetPose first (not yet exposed as a separate
+        MCP command).
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"asset_path": asset_path, "side": side, "bone_name": bone_name}
+            if rotation_quat is not None:
+                params["rotation_quat"] = rotation_quat
+            elif rotation_euler is not None:
+                params["rotation_euler"] = rotation_euler
+            else:
+                return {"success": False, "message": "Provide rotation_quat=[x,y,z,w] or rotation_euler=[pitch,yaw,roll]"}
+            response = unreal.send_command("set_ik_retargeter_retarget_pose", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting retarget pose: {e}"}
 
     logger.info("Animation tools registered successfully")

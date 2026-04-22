@@ -69,4 +69,14 @@ private:
     TSharedPtr<FJsonObject> HandleAddIKRigRetargetChain(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddIKRigGoal(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddIKRigSolver(const TSharedPtr<FJsonObject>& Params);
+
+    // IKRetargeter write tools (Batch C.2)
+    TSharedPtr<FJsonObject> HandleCreateIKRetargeter(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRetargeterOpEnabled(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRetargeterOpField(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIKRetargeterOp(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIKRetargeterPinBoneEntry(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRetargeterChainMapping(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleIKRetargeterAutoMapChains(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRetargeterRetargetPose(const TSharedPtr<FJsonObject>& Params);
 };

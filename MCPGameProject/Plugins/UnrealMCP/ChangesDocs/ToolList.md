@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 75 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 79。)
+> 83 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 87。)
 
 ---
 
@@ -92,7 +92,7 @@
 | `add_chooser_table_row` | 添加行（asset result + 按列位置传入条件值，支持 Enum/Bool 列） |
 | `remove_chooser_table_row` | 按 index 移除行（同步移除所有列的行值） |
 
-## IK Tools (9)
+## IK Tools (17)
 
 | Tool | Description |
 |---|---|
@@ -105,6 +105,14 @@
 | `add_ik_rig_retarget_chain` | 添加 retarget chain（name + start/end bone + 可选 goal） |
 | `add_ik_rig_goal` | 添加 IK Goal（name + 绑定骨骼） |
 | `add_ik_rig_solver` | 向 solver 栈末尾追加 solver（支持全路径或裸 struct 名） |
+| `create_ik_retargeter` | 新建 UIKRetargeter 资产，可选传入 source/target IKRig 自动装配 |
+| `set_ik_retargeter_op_enabled` | 启/停 retarget op |
+| `set_ik_retargeter_op_field` | 通用反射 setter：按点分路径设 op 任意字段（用 UE T3D 文本格式） |
+| `add_ik_retargeter_op` | 向 op 栈追加 op，可选 insert_after_index 触发 reorder |
+| `add_ik_retargeter_pin_bones_entry` | 往 PinBones op 的 BonesToPin 追加一对 from/to 骨骼 |
+| `set_ik_retargeter_chain_mapping` | 在指定 op 上把某 target chain 映射到某 source chain（空 source 清空映射） |
+| `ik_retargeter_auto_map_chains` | 自动映射 op 的 chains（5 种模式：MapAllExact / MapOnlyEmpty* / Fuzzy / ClearAll） |
+| `set_ik_retargeter_retarget_pose` | 设置当前 retarget pose 的某根骨骼旋转偏移（quat 或 euler）|
 
 ## State Machine Tools (3)
 

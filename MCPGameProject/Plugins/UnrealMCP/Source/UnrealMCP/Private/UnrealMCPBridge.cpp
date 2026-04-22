@@ -369,7 +369,15 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_ik_rig_retarget_root") ||
                      CommandType == TEXT("add_ik_rig_retarget_chain") ||
                      CommandType == TEXT("add_ik_rig_goal") ||
-                     CommandType == TEXT("add_ik_rig_solver"))
+                     CommandType == TEXT("add_ik_rig_solver") ||
+                     CommandType == TEXT("create_ik_retargeter") ||
+                     CommandType == TEXT("set_ik_retargeter_op_enabled") ||
+                     CommandType == TEXT("set_ik_retargeter_op_field") ||
+                     CommandType == TEXT("add_ik_retargeter_op") ||
+                     CommandType == TEXT("add_ik_retargeter_pin_bones_entry") ||
+                     CommandType == TEXT("set_ik_retargeter_chain_mapping") ||
+                     CommandType == TEXT("ik_retargeter_auto_map_chains") ||
+                     CommandType == TEXT("set_ik_retargeter_retarget_pose"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

@@ -37,7 +37,10 @@
 #include "Rig/IKRigDefinition.h"
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetProfile.h"
+#include "Retargeter/IKRetargetChainMapping.h"
+#include "Retargeter/RetargetOps/PinBoneOp.h"
 #include "RigEditor/IKRigController.h"
+#include "RetargetEditor/IKRetargeterController.h"
 #include "UObject/UnrealType.h"
 #include "InputAction.h"
 #include "InputMappingContext.h"
@@ -255,6 +258,38 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("add_ik_rig_solver"))
     {
         return HandleAddIKRigSolver(Params);
+    }
+    if (CommandType == TEXT("create_ik_retargeter"))
+    {
+        return HandleCreateIKRetargeter(Params);
+    }
+    if (CommandType == TEXT("set_ik_retargeter_op_enabled"))
+    {
+        return HandleSetIKRetargeterOpEnabled(Params);
+    }
+    if (CommandType == TEXT("set_ik_retargeter_op_field"))
+    {
+        return HandleSetIKRetargeterOpField(Params);
+    }
+    if (CommandType == TEXT("add_ik_retargeter_op"))
+    {
+        return HandleAddIKRetargeterOp(Params);
+    }
+    if (CommandType == TEXT("add_ik_retargeter_pin_bones_entry"))
+    {
+        return HandleAddIKRetargeterPinBoneEntry(Params);
+    }
+    if (CommandType == TEXT("set_ik_retargeter_chain_mapping"))
+    {
+        return HandleSetIKRetargeterChainMapping(Params);
+    }
+    if (CommandType == TEXT("ik_retargeter_auto_map_chains"))
+    {
+        return HandleIKRetargeterAutoMapChains(Params);
+    }
+    if (CommandType == TEXT("set_ik_retargeter_retarget_pose"))
+    {
+        return HandleSetIKRetargeterRetargetPose(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -4055,5 +4090,550 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRigSolver(const 
     Result->SetBoolField(TEXT("success"), true);
     Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
     Result->SetNumberField(TEXT("solver_index"), SolverIndex);
+    return Result;
+}
+
+// =============================================================================
+// Batch C.2: IKRetargeter write tools (Items 10 + 11 + 12)
+// =============================================================================
+
+namespace
+{
+    UIKRetargeterController* GetIKRetargeterControllerForPath(const FString& AssetPath, FString& OutError)
+    {
+        UIKRetargeter* Asset = LoadObject<UIKRetargeter>(nullptr, *AssetPath);
+        if (!Asset)
+        {
+            OutError = FString::Printf(TEXT("IKRetargeter asset not found: %s"), *AssetPath);
+            return nullptr;
+        }
+        UIKRetargeterController* Ctrl = UIKRetargeterController::GetController(Asset);
+        if (!Ctrl)
+        {
+            OutError = FString::Printf(TEXT("Failed to obtain UIKRetargeterController for: %s"), *AssetPath);
+            return nullptr;
+        }
+        return Ctrl;
+    }
+
+    bool ParseSourceOrTarget(const FString& Side, ERetargetSourceOrTarget& Out, FString& OutError)
+    {
+        if (Side.Equals(TEXT("Source"), ESearchCase::IgnoreCase))
+        {
+            Out = ERetargetSourceOrTarget::Source;
+            return true;
+        }
+        if (Side.Equals(TEXT("Target"), ESearchCase::IgnoreCase))
+        {
+            Out = ERetargetSourceOrTarget::Target;
+            return true;
+        }
+        OutError = FString::Printf(TEXT("Invalid 'side' value: %s (expected 'Source' or 'Target')"), *Side);
+        return false;
+    }
+
+    // Walk a dotted property path through the script struct, e.g. "Settings.bCopyTranslation".
+    // Returns the leaf FProperty + value pointer; returns false when any segment fails to resolve.
+    // Container may be the FInstancedStruct memory for the op itself; on success ContainerOut points
+    // to the memory inside the leaf (not the leaf value itself), and PropertyOut is the leaf property.
+    bool ResolveStructFieldPath(
+        const UScriptStruct* StructType,
+        void* StructMemory,
+        const FString& FieldPath,
+        FProperty*& PropertyOut,
+        void*& ValuePtrOut,
+        FString& OutError)
+    {
+        if (!StructType || !StructMemory)
+        {
+            OutError = TEXT("ResolveStructFieldPath: null struct or memory");
+            return false;
+        }
+        TArray<FString> Segments;
+        FieldPath.ParseIntoArray(Segments, TEXT("."), true);
+        if (Segments.Num() == 0)
+        {
+            OutError = TEXT("Empty field_path");
+            return false;
+        }
+
+        const UScriptStruct* CurrentStruct = StructType;
+        void* CurrentMem = StructMemory;
+        for (int32 i = 0; i < Segments.Num(); ++i)
+        {
+            FProperty* Prop = CurrentStruct->FindPropertyByName(FName(*Segments[i]));
+            if (!Prop)
+            {
+                OutError = FString::Printf(TEXT("Property '%s' not found on struct '%s' at segment %d of '%s'"),
+                    *Segments[i], *CurrentStruct->GetName(), i, *FieldPath);
+                return false;
+            }
+            void* InnerVal = Prop->ContainerPtrToValuePtr<void>(CurrentMem);
+            if (i == Segments.Num() - 1)
+            {
+                PropertyOut = Prop;
+                ValuePtrOut = InnerVal;
+                return true;
+            }
+            // Need to descend into a struct
+            FStructProperty* AsStruct = CastField<FStructProperty>(Prop);
+            if (!AsStruct)
+            {
+                OutError = FString::Printf(TEXT("Cannot descend into non-struct property '%s' at segment %d of '%s'"),
+                    *Segments[i], i, *FieldPath);
+                return false;
+            }
+            CurrentStruct = AsStruct->Struct;
+            CurrentMem = InnerVal;
+        }
+        return false; // unreachable
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateIKRetargeter(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, SourceIKRigPath, TargetIKRigPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+    Params->TryGetStringField(TEXT("source_ik_rig_path"), SourceIKRigPath); // optional
+    Params->TryGetStringField(TEXT("target_ik_rig_path"), TargetIKRigPath); // optional
+
+    FString PackageName, AssetName;
+    if (!SplitAssetPath(AssetPath, PackageName, AssetName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid asset_path: %s"), *AssetPath));
+    }
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UIKRetargeter>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("IKRetargeter asset already exists: %s"), *AssetPath));
+        }
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+    }
+    Package->FullyLoad();
+
+    UIKRetargeter* NewAsset = NewObject<UIKRetargeter>(
+        Package,
+        UIKRetargeter::StaticClass(),
+        *AssetName,
+        RF_Public | RF_Standalone);
+    if (!NewAsset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NewObject<UIKRetargeter> returned null"));
+    }
+
+    FAssetRegistryModule::AssetCreated(NewAsset);
+    Package->MarkPackageDirty();
+
+    UIKRetargeterController* Ctrl = UIKRetargeterController::GetController(NewAsset);
+    if (!Ctrl)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("UIKRetargeterController::GetController returned null on the newly created asset"));
+    }
+
+    bool bSourceAssigned = false, bTargetAssigned = false;
+    FString SourceWarn, TargetWarn;
+    if (!SourceIKRigPath.IsEmpty())
+    {
+        UIKRigDefinition* Src = LoadObject<UIKRigDefinition>(nullptr, *SourceIKRigPath);
+        if (!Src) SourceWarn = FString::Printf(TEXT("Source IKRig not found: %s"), *SourceIKRigPath);
+        else { Ctrl->SetIKRig(ERetargetSourceOrTarget::Source, Src); bSourceAssigned = true; }
+    }
+    if (!TargetIKRigPath.IsEmpty())
+    {
+        UIKRigDefinition* Tgt = LoadObject<UIKRigDefinition>(nullptr, *TargetIKRigPath);
+        if (!Tgt) TargetWarn = FString::Printf(TEXT("Target IKRig not found: %s"), *TargetIKRigPath);
+        else { Ctrl->SetIKRig(ERetargetSourceOrTarget::Target, Tgt); bTargetAssigned = true; }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewAsset->GetPathName());
+    Result->SetBoolField(TEXT("source_assigned"), bSourceAssigned);
+    Result->SetBoolField(TEXT("target_assigned"), bTargetAssigned);
+    if (!SourceWarn.IsEmpty()) Result->SetStringField(TEXT("source_warning"), SourceWarn);
+    if (!TargetWarn.IsEmpty()) Result->SetStringField(TEXT("target_warning"), TargetWarn);
+    Result->SetBoolField(TEXT("saved"), false);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterOpEnabled(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    int32 OpIndex = INDEX_NONE;
+    bool bEnabled = false;
+
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("op_index"), OpIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_index' parameter"));
+    if (!Params->TryGetBoolField(TEXT("enabled"), bEnabled))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'enabled' parameter"));
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const bool bOK = Ctrl->SetRetargetOpEnabled(OpIndex, bEnabled);
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("SetRetargetOpEnabled failed (invalid index?): op_index=%d"), OpIndex));
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("op_index"), OpIndex);
+    Result->SetBoolField(TEXT("enabled"), bEnabled);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterOpField(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, FieldPath, Value;
+    int32 OpIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("op_index"), OpIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("field_path"), FieldPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'field_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("value"), Value))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter (must be string; for structs/arrays use the same text format UE accepts in T3D)"));
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    FInstancedStruct* OpStruct = Ctrl->GetRetargetOpStructAtIndex(OpIndex);
+    if (!OpStruct || !OpStruct->IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Op not found at index %d"), OpIndex));
+    }
+
+    const UScriptStruct* OpType = OpStruct->GetScriptStruct();
+    void* OpMemory = OpStruct->GetMutableMemory();
+
+    FProperty* Prop = nullptr;
+    void* ValuePtr = nullptr;
+    FString PathErr;
+    if (!ResolveStructFieldPath(OpType, OpMemory, FieldPath, Prop, ValuePtr, PathErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PathErr);
+    }
+
+    // Use ImportText_Direct: handles primitives, FName, FString, enums, FVector, FRotator, FQuat,
+    // arrays-as-text, etc. Returns null on parse failure.
+    const TCHAR* Result = Prop->ImportText_Direct(*Value, ValuePtr, /*OwnerObject=*/nullptr, PPF_None, GLog);
+    if (!Result)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("ImportText_Direct failed for field '%s' (value='%s', expected text-form for type %s)"),
+                *FieldPath, *Value, *Prop->GetCPPType()));
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+    Out->SetBoolField(TEXT("success"), true);
+    Out->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Out->SetNumberField(TEXT("op_index"), OpIndex);
+    Out->SetStringField(TEXT("field_path"), FieldPath);
+    Out->SetStringField(TEXT("op_struct"), OpType->GetName());
+    return Out;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRetargeterOp(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, OpStructName;
+    int32 InsertAfter = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("op_struct_name"), OpStructName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_struct_name' parameter"));
+    Params->TryGetNumberField(TEXT("insert_after_index"), InsertAfter); // optional
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    int32 NewIndex = INDEX_NONE;
+    if (OpStructName.StartsWith(TEXT("/Script/")))
+    {
+        NewIndex = Ctrl->AddRetargetOp(OpStructName);
+    }
+    else
+    {
+        UScriptStruct* Struct = FindFirstObject<UScriptStruct>(*OpStructName, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+        if (!Struct)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Unknown op struct: %s"), *OpStructName));
+        }
+        NewIndex = Ctrl->AddRetargetOp(Struct);
+    }
+
+    if (NewIndex == INDEX_NONE)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AddRetargetOp returned INDEX_NONE for type: %s"), *OpStructName));
+    }
+
+    // Optional reorder: move the new op so it sits right after insert_after_index.
+    bool bMoved = false;
+    int32 FinalIndex = NewIndex;
+    if (InsertAfter != INDEX_NONE)
+    {
+        const int32 TargetIdx = InsertAfter + 1;
+        if (TargetIdx != NewIndex)
+        {
+            bMoved = Ctrl->MoveRetargetOpInStack(NewIndex, TargetIdx);
+            // The actual final index may differ from TargetIdx because of execution-order constraints;
+            // we re-resolve via op name.
+            const FName OpName = Ctrl->GetOpName(NewIndex);
+            if (!OpName.IsNone())
+            {
+                FinalIndex = Ctrl->GetIndexOfOpByName(OpName);
+            }
+        }
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("op_index"), FinalIndex);
+    Result->SetBoolField(TEXT("reordered"), bMoved);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRetargeterPinBoneEntry(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, BoneCopyFrom, BoneCopyTo;
+    int32 OpIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("op_index"), OpIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("bone_to_copy_from"), BoneCopyFrom))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'bone_to_copy_from' parameter"));
+    if (!Params->TryGetStringField(TEXT("bone_to_copy_to"), BoneCopyTo))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'bone_to_copy_to' parameter"));
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    FInstancedStruct* OpStruct = Ctrl->GetRetargetOpStructAtIndex(OpIndex);
+    if (!OpStruct || !OpStruct->IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Op not found at index %d"), OpIndex));
+    }
+    const UScriptStruct* OpType = OpStruct->GetScriptStruct();
+    if (!OpType || !OpType->IsChildOf(FIKRetargetPinBoneOp::StaticStruct()))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Op at index %d is not a Pin Bones op (got %s)"),
+                OpIndex, OpType ? *OpType->GetName() : TEXT("null")));
+    }
+
+    FIKRetargetPinBoneOp* PinOp = OpStruct->GetMutablePtr<FIKRetargetPinBoneOp>();
+    if (!PinOp)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Pin Bones op memory is null"));
+    }
+
+    FPinBoneData NewEntry;
+    NewEntry.BoneToCopyFrom.BoneName = FName(*BoneCopyFrom);
+    NewEntry.BoneToCopyTo.BoneName = FName(*BoneCopyTo);
+    PinOp->Settings.BonesToPin.Add(NewEntry);
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("op_index"), OpIndex);
+    Result->SetNumberField(TEXT("entry_index"), PinOp->Settings.BonesToPin.Num() - 1);
+    Result->SetStringField(TEXT("bone_to_copy_from"), BoneCopyFrom);
+    Result->SetStringField(TEXT("bone_to_copy_to"), BoneCopyTo);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterChainMapping(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, SourceChain, TargetChain;
+    int32 OpIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("op_index"), OpIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_index' parameter"));
+    Params->TryGetStringField(TEXT("source_chain_name"), SourceChain); // empty → clear mapping
+    if (!Params->TryGetStringField(TEXT("target_chain_name"), TargetChain))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_chain_name' parameter"));
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const FName OpName = Ctrl->GetOpName(OpIndex);
+    if (OpName.IsNone())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("No op found at index %d"), OpIndex));
+    }
+
+    const FName SourceFName = SourceChain.IsEmpty() ? NAME_None : FName(*SourceChain);
+    const FName TargetFName = FName(*TargetChain);
+    const bool bOK = Ctrl->SetSourceChain(SourceFName, TargetFName, OpName);
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("SetSourceChain failed: source='%s' target='%s' op='%s' (chain may not exist on the op's IKRig)"),
+                *SourceChain, *TargetChain, *OpName.ToString()));
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("op_index"), OpIndex);
+    Result->SetStringField(TEXT("op_name"), OpName.ToString());
+    Result->SetStringField(TEXT("source_chain_name"), SourceChain);
+    Result->SetStringField(TEXT("target_chain_name"), TargetChain);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleIKRetargeterAutoMapChains(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, Mode;
+    int32 OpIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("op_index"), OpIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'op_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("mode"), Mode))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mode' parameter"));
+
+    // Map combined-mode strings (per requirement doc) → (EAutoMapChainType, bForceRemap).
+    EAutoMapChainType MapType = EAutoMapChainType::Exact;
+    bool bForceRemap = false;
+    if      (Mode.Equals(TEXT("MapAllExact"),       ESearchCase::IgnoreCase)) { MapType = EAutoMapChainType::Exact; bForceRemap = true;  }
+    else if (Mode.Equals(TEXT("MapOnlyEmptyExact"), ESearchCase::IgnoreCase)) { MapType = EAutoMapChainType::Exact; bForceRemap = false; }
+    else if (Mode.Equals(TEXT("MapAllFuzzy"),       ESearchCase::IgnoreCase)) { MapType = EAutoMapChainType::Fuzzy; bForceRemap = true;  }
+    else if (Mode.Equals(TEXT("MapOnlyEmptyFuzzy"), ESearchCase::IgnoreCase)) { MapType = EAutoMapChainType::Fuzzy; bForceRemap = false; }
+    else if (Mode.Equals(TEXT("ClearAll"),          ESearchCase::IgnoreCase)) { MapType = EAutoMapChainType::Clear; bForceRemap = true;  }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid mode '%s' (expected MapAllExact / MapOnlyEmptyExact / MapAllFuzzy / MapOnlyEmptyFuzzy / ClearAll)"), *Mode));
+    }
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const FName OpName = Ctrl->GetOpName(OpIndex);
+    if (OpName.IsNone())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("No op found at index %d"), OpIndex));
+    }
+
+    Ctrl->AutoMapChains(MapType, bForceRemap, OpName);
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("op_index"), OpIndex);
+    Result->SetStringField(TEXT("op_name"), OpName.ToString());
+    Result->SetStringField(TEXT("mode"), Mode);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterRetargetPose(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, Side, BoneName;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("side"), Side))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'side' parameter (expected 'Source' or 'Target')"));
+    if (!Params->TryGetStringField(TEXT("bone_name"), BoneName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'bone_name' parameter"));
+
+    ERetargetSourceOrTarget SideEnum;
+    FString SideErr;
+    if (!ParseSourceOrTarget(Side, SideEnum, SideErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(SideErr);
+    }
+
+    // Accept either rotation_quat=[x,y,z,w] (preferred) or rotation_euler=[pitch,yaw,roll].
+    FQuat Offset = FQuat::Identity;
+    bool bGotRotation = false;
+    const TArray<TSharedPtr<FJsonValue>>* QuatArr = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* EulerArr = nullptr;
+    if (Params->TryGetArrayField(TEXT("rotation_quat"), QuatArr) && QuatArr->Num() == 4)
+    {
+        Offset = FQuat(
+            (*QuatArr)[0]->AsNumber(),
+            (*QuatArr)[1]->AsNumber(),
+            (*QuatArr)[2]->AsNumber(),
+            (*QuatArr)[3]->AsNumber());
+        bGotRotation = true;
+    }
+    else if (Params->TryGetArrayField(TEXT("rotation_euler"), EulerArr) && EulerArr->Num() == 3)
+    {
+        const FRotator Rot(
+            (*EulerArr)[0]->AsNumber(), // Pitch
+            (*EulerArr)[1]->AsNumber(), // Yaw
+            (*EulerArr)[2]->AsNumber()); // Roll
+        Offset = Rot.Quaternion();
+        bGotRotation = true;
+    }
+
+    if (!bGotRotation)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide either 'rotation_quat'=[x,y,z,w] or 'rotation_euler'=[pitch,yaw,roll]"));
+    }
+
+    FString Err;
+    UIKRetargeterController* Ctrl = GetIKRetargeterControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    Ctrl->SetRotationOffsetForRetargetPoseBone(FName(*BoneName), Offset, SideEnum);
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetStringField(TEXT("side"), Side);
+    Result->SetStringField(TEXT("bone_name"), BoneName);
+    TArray<TSharedPtr<FJsonValue>> AppliedQuat = {
+        MakeShared<FJsonValueNumber>(Offset.X),
+        MakeShared<FJsonValueNumber>(Offset.Y),
+        MakeShared<FJsonValueNumber>(Offset.Z),
+        MakeShared<FJsonValueNumber>(Offset.W)
+    };
+    Result->SetArrayField(TEXT("applied_quat"), AppliedQuat);
+    Result->SetStringField(TEXT("note"), TEXT("Always operates on current retarget pose. Switch active pose first via SetCurrentRetargetPose if you need a different target."));
     return Result;
 }
