@@ -607,21 +607,35 @@ def register_blueprint_tools(mcp: FastMCP):
             inside `event_graphs` from `get_blueprint_info`.
 
             AnimGraph nodes (UAnimGraphNode_* subclasses) additionally carry
-            two Details-panel-only fields beyond the standard pin array:
+            three Details-panel-only fields beyond the standard pin array:
               - "anim_node_struct"       : name of the inner FAnimNode_* struct
                                            (e.g. "AnimNode_TwoWayBlend")
               - "anim_node_properties"   : JSON object of every EditAnywhere
-                                           UPROPERTY on that struct (e.g. for
-                                           TwoWayBlend: AlphaInputType,
+                                           UPROPERTY on the runtime FAnimNode_*
+                                           struct (e.g. AlphaInputType,
                                            bAlphaBoolEnabled, bAlwaysUpdateChildren,
                                            bResetChildOnActivation, Alpha, etc.)
+              - "node_object_properties" : JSON object of every EditAnywhere
+                                           UPROPERTY on the editor-side
+                                           UAnimGraphNode_* UObject itself
+                                           (NOT on the runtime struct). Surfaces
+                                           UAnimGraphNode_Base inherited fields:
+                                           Tag (FName, runtime node lookup),
+                                           ShowPinForProperties (per-property pin
+                                           visibility), InitialUpdateFunction /
+                                           BecomeRelevantFunction / UpdateFunction
+                                           (FMemberReference function callbacks),
+                                           plus any subclass-specific editor
+                                           UPROPERTY. Inner FAnimNode_* and
+                                           Binding sub-object are excluded
+                                           (already in payloads above).
               - "property_bindings"      : array of Details-panel Property
                                            Bindings (the menu behind the small
                                            binding button next to a pin). Each
                                            entry has { property_name, detail:
                                            { PathAsText, PropertyPath[], Type,
                                            bIsBound, bIsPromotion, PinType, ... } }
-            Both are omitted when pin_payload_mode="names_only". Non-AnimGraph
+            All three are omitted when pin_payload_mode="names_only". Non-AnimGraph
             nodes (K2Node_* in EventGraph / user functions) never carry these
             fields.
         """

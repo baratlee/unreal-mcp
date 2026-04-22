@@ -67,7 +67,7 @@ namespace
     constexpr int32 GPinSummaryThreshold = 256;
     constexpr int32 GPinSummaryPreviewLen = 96;
 
-    // Method A: serialize the two Details-panel-only dimensions of AnimGraph
+    // Method A: serialize the three Details-panel-only dimensions of AnimGraph
     // nodes that would otherwise be invisible to callers:
     //   1. anim_node_properties — EditAnywhere UPROPERTY on the inner
     //      FAnimNode_* struct (e.g. TwoWayBlend's AlphaInputType / bEnabled /
@@ -76,6 +76,13 @@ namespace
     //   2. property_bindings   — entries in UAnimGraphNodeBinding_Base's
     //      PropertyBindings TMap (UE 5.x: the old per-node PropertyBindings_DEPRECATED
     //      map was moved onto the Instanced `Binding` sub-object).
+    //   3. node_object_properties — EditAnywhere UPROPERTY on the editor-side
+    //      UAnimGraphNode_* UObject itself (NOT the runtime struct). This
+    //      surfaces `Tag` (UAnimGraphNode_Base private UPROPERTY used to look
+    //      up nodes at runtime), `ShowPinForProperties`, `InitialUpdateFunction`
+    //      / `BecomeRelevantFunction` / `UpdateFunction`, plus any subclass-
+    //      specific editor fields. Excludes the inner FAnimNode_* (already in
+    //      payload 1) and the Binding sub-object (already in payload 2).
     //
     // We reach both via reflection rather than hard-coded casts, so this works
     // for every UAnimGraphNode_* subclass regardless of its inner-node field
@@ -174,6 +181,46 @@ namespace
         }
 
         NodeObj->SetArrayField(TEXT("property_bindings"), BindingsArray);
+
+        // (3) Node-UObject-level UPROPERTY (Tag, ShowPinForProperties,
+        // InitialUpdateFunction etc.). Walks the UClass with TFieldIterator so
+        // parent-class properties (UAnimGraphNode_Base) come along automatically.
+        // Skips the inner FAnimNode_* StructProperty and the Binding ObjectProperty
+        // because those already drive payloads (1) and (2) respectively.
+        TSharedRef<FJsonObject> NodeObjProps = MakeShared<FJsonObject>();
+        for (TFieldIterator<FProperty> ObjPropIt(AnimNode->GetClass()); ObjPropIt; ++ObjPropIt)
+        {
+            FProperty* ObjProp = *ObjPropIt;
+            if (!ObjProp) continue;
+            if (!ObjProp->HasAnyPropertyFlags(CPF_Edit)) continue;
+            if (ObjProp->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_Deprecated)) continue;
+
+            // Skip the inner runtime FAnimNode_* struct — already in anim_node_properties
+            if (FStructProperty* SP = CastField<FStructProperty>(ObjProp))
+            {
+                if (SP->Struct && SP->Struct->GetName().StartsWith(TEXT("AnimNode_")))
+                {
+                    continue;
+                }
+            }
+            // Skip the Binding sub-object — already in property_bindings
+            if (ObjProp->GetFName() == TEXT("Binding"))
+            {
+                continue;
+            }
+
+            const void* ValuePtr = ObjProp->ContainerPtrToValuePtr<void>(AnimNode);
+            TSharedPtr<FJsonValue> JsonValue = FJsonObjectConverter::UPropertyToJsonValue(
+                ObjProp,
+                ValuePtr,
+                /*CheckFlags=*/0,
+                /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
+            if (JsonValue.IsValid())
+            {
+                NodeObjProps->SetField(ObjProp->GetName(), JsonValue);
+            }
+        }
+        NodeObj->SetObjectField(TEXT("node_object_properties"), NodeObjProps);
     }
 
     // Serialize a single UEdGraphNode (and its pin links) to a JSON object.
