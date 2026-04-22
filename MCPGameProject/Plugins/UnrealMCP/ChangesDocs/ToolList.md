@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 64 tools total, organized by category.
+> 65 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 69。)
 
 ---
 
@@ -63,7 +63,7 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (10)
+## Animation Tools (11)
 
 | Tool | Description |
 |---|---|
@@ -73,6 +73,7 @@
 | `get_animation_bone_track_names` | 获取骨骼轨道名列表（Montage 自动穿透 Segment 聚合） |
 | `get_montage_composite_info` | 获取 AnimMontage 组合结构：Sections / SlotAnimTracks / Segments / Blend 参数 |
 | `find_animations_for_skeleton` | 通过 Asset Registry 按 Skeleton 反查所有关联的 AnimSequence/AnimMontage |
+| `get_anim_blueprint_info` | 读取 UAnimBlueprint 资产级属性：TargetSkeleton / 预览 Mesh / 预览 AnimBP / 继承链等（与 get_blueprint_info 互补） |
 | `get_skeleton_bone_hierarchy` | 获取 USkeleton 的完整骨骼层级（含虚拟骨骼） |
 | `get_skeleton_retarget_modes` | 获取 USkeleton 每根骨骼的 TranslationRetargetingMode |
 | `set_animation_properties` | 设置 AnimSequence 的 Root Motion 属性（enable/root_lock/force_lock/normalized_scale） |

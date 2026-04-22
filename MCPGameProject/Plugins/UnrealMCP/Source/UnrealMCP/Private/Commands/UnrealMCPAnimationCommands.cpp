@@ -10,6 +10,8 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
+#include "Animation/AnimBlueprint.h"
+#include "Engine/SkeletalMesh.h"
 #include "AnimationBlueprintLibrary.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -96,6 +98,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("find_animations_for_skeleton"))
     {
         return HandleFindAnimationsForSkeleton(Params);
+    }
+    if (CommandType == TEXT("get_anim_blueprint_info"))
+    {
+        return HandleGetAnimBlueprintInfo(Params);
     }
     if (CommandType == TEXT("get_skeleton_bone_hierarchy"))
     {
@@ -520,6 +526,160 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleFindAnimationsForSkel
     Result->SetNumberField(TEXT("sequence_count"), SequenceCount);
     Result->SetNumberField(TEXT("montage_count"), MontageCount);
     Result->SetArrayField(TEXT("assets"), MatchedJson);
+    return Result;
+}
+
+namespace
+{
+    TSharedPtr<FJsonObject> MakeAssetRefJson(const UObject* Obj)
+    {
+        if (!Obj) return nullptr;
+        TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+        Out->SetStringField(TEXT("name"), Obj->GetName());
+        Out->SetStringField(TEXT("path"), Obj->GetPathName());
+        return Out;
+    }
+
+    FString PreviewAppMethodToString(EPreviewAnimationBlueprintApplicationMethod M)
+    {
+        switch (M)
+        {
+            case EPreviewAnimationBlueprintApplicationMethod::LinkedLayers:    return TEXT("LinkedLayers");
+            case EPreviewAnimationBlueprintApplicationMethod::LinkedAnimGraph: return TEXT("LinkedAnimGraph");
+            default:                                                           return TEXT("Unknown");
+        }
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimBlueprintInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+    }
+
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
+    if (!AnimBP)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint is not an AnimBlueprint: %s (class=%s)"),
+                *BlueprintPath, *Blueprint->GetClass()->GetName()));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("name"), AnimBP->GetName());
+    Result->SetStringField(TEXT("path"), AnimBP->GetPathName());
+
+    if (AnimBP->ParentClass)
+    {
+        Result->SetStringField(TEXT("parent_class"), AnimBP->ParentClass->GetName());
+    }
+
+    switch (AnimBP->BlueprintType)
+    {
+        case BPTYPE_Normal:           Result->SetStringField(TEXT("blueprint_type"), TEXT("Normal")); break;
+        case BPTYPE_Interface:        Result->SetStringField(TEXT("blueprint_type"), TEXT("Interface")); break;
+        case BPTYPE_FunctionLibrary:  Result->SetStringField(TEXT("blueprint_type"), TEXT("FunctionLibrary")); break;
+        case BPTYPE_MacroLibrary:     Result->SetStringField(TEXT("blueprint_type"), TEXT("MacroLibrary")); break;
+        default:                      Result->SetStringField(TEXT("blueprint_type"), TEXT("Other")); break;
+    }
+
+    // --- AnimBP-specific: skeleton / template flag ---
+    Result->SetBoolField(TEXT("is_template"), AnimBP->bIsTemplate);
+
+    if (TSharedPtr<FJsonObject> SkelJson = MakeAssetRefJson(AnimBP->TargetSkeleton))
+    {
+        Result->SetObjectField(TEXT("target_skeleton"), SkelJson);
+    }
+    else
+    {
+        Result->SetField(TEXT("target_skeleton"), MakeShared<FJsonValueNull>());
+    }
+
+    // --- Preview mesh / preview anim BP (editor-time preview settings) ---
+    // Use const GetPreviewMesh() so we don't auto-lookup via target skeleton; we want
+    // only what's explicitly set on this AnimBP. Caller can still cross-reference
+    // the skeleton's preview mesh via the target_skeleton output.
+    if (TSharedPtr<FJsonObject> MeshJson = MakeAssetRefJson(const_cast<const UAnimBlueprint*>(AnimBP)->GetPreviewMesh()))
+    {
+        Result->SetObjectField(TEXT("preview_skeletal_mesh"), MeshJson);
+    }
+    else
+    {
+        Result->SetField(TEXT("preview_skeletal_mesh"), MakeShared<FJsonValueNull>());
+    }
+
+    if (TSharedPtr<FJsonObject> PreviewAnimBPJson = MakeAssetRefJson(AnimBP->GetPreviewAnimationBlueprint()))
+    {
+        Result->SetObjectField(TEXT("preview_animation_blueprint"), PreviewAnimBPJson);
+    }
+    else
+    {
+        Result->SetField(TEXT("preview_animation_blueprint"), MakeShared<FJsonValueNull>());
+    }
+
+    Result->SetStringField(TEXT("preview_animation_blueprint_application_method"),
+        PreviewAppMethodToString(AnimBP->GetPreviewAnimationBlueprintApplicationMethod()));
+    Result->SetStringField(TEXT("preview_animation_blueprint_tag"),
+        AnimBP->GetPreviewAnimationBlueprintTag().ToString());
+
+#if WITH_EDITORONLY_DATA
+    if (UClass* BindingClass = AnimBP->GetDefaultBindingClass())
+    {
+        Result->SetStringField(TEXT("default_binding_class"), BindingClass->GetName());
+    }
+    else
+    {
+        Result->SetField(TEXT("default_binding_class"), MakeShared<FJsonValueNull>());
+    }
+#endif
+
+    // --- Optimization flags ---
+    Result->SetBoolField(TEXT("use_multi_threaded_animation_update"), AnimBP->bUseMultiThreadedAnimationUpdate);
+    Result->SetBoolField(TEXT("warn_about_blueprint_usage"), AnimBP->bWarnAboutBlueprintUsage);
+    Result->SetBoolField(TEXT("enable_linked_anim_layer_instance_sharing"), AnimBP->bEnableLinkedAnimLayerInstanceSharing != 0);
+
+    // --- Sync groups (names only) ---
+    TArray<TSharedPtr<FJsonValue>> GroupsArray;
+    for (const FAnimGroupInfo& Group : AnimBP->Groups)
+    {
+        GroupsArray.Add(MakeShared<FJsonValueString>(Group.Name.ToString()));
+    }
+    Result->SetArrayField(TEXT("anim_groups"), GroupsArray);
+
+    Result->SetNumberField(TEXT("num_parent_asset_overrides"), AnimBP->ParentAssetOverrides.Num());
+    Result->SetNumberField(TEXT("num_pose_watches"), AnimBP->PoseWatches.Num());
+
+    // --- Parent / root anim blueprint lineage (editor-only helpers) ---
+#if WITH_EDITOR
+    if (TSharedPtr<FJsonObject> ParentJson = MakeAssetRefJson(UAnimBlueprint::GetParentAnimBlueprint(AnimBP)))
+    {
+        Result->SetObjectField(TEXT("parent_anim_blueprint"), ParentJson);
+    }
+    else
+    {
+        Result->SetField(TEXT("parent_anim_blueprint"), MakeShared<FJsonValueNull>());
+    }
+
+    UAnimBlueprint* Root = UAnimBlueprint::FindRootAnimBlueprint(AnimBP);
+    if (Root && Root != AnimBP)
+    {
+        Result->SetObjectField(TEXT("root_anim_blueprint"), MakeAssetRefJson(Root));
+    }
+    else
+    {
+        Result->SetField(TEXT("root_anim_blueprint"), MakeShared<FJsonValueNull>());
+    }
+#endif
+
     return Result;
 }
 

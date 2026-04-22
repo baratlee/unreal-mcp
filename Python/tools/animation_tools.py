@@ -274,6 +274,67 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_anim_blueprint_info(ctx: Context, blueprint_path: str) -> Dict[str, Any]:
+        """Get AnimBlueprint-specific asset properties that `get_blueprint_info` does not expose.
+
+        Surfaces fields on UAnimBlueprint that are not part of the generated
+        AnimInstance class (TargetSkeleton, Preview Mesh / Preview AnimBP,
+        DefaultBindingClass, Sync Groups, parent/root AnimBP lineage, etc.).
+        Use this as the "AnimBP asset header" view; pair with `get_blueprint_info`
+        for the AnimInstance-class view (variables / event graphs / functions).
+
+        Args:
+            blueprint_path: Asset path of the AnimBlueprint, e.g.
+                "/Game/Characters/ABP_Hero" or "/Game/.../ABP_Hero.ABP_Hero".
+                The short name form is also accepted.
+
+        Returns:
+            Dict with:
+              name, path, parent_class, blueprint_type, is_template,
+              target_skeleton:               {name, path} or null (null when is_template)
+              preview_skeletal_mesh:         {name, path} or null
+              preview_animation_blueprint:   {name, path} or null
+              preview_animation_blueprint_application_method:  "LinkedLayers" / "LinkedAnimGraph"
+              preview_animation_blueprint_tag:                 string
+              default_binding_class:         class name or null
+              use_multi_threaded_animation_update: bool
+              warn_about_blueprint_usage:    bool
+              enable_linked_anim_layer_instance_sharing: bool
+              anim_groups:                   [group_name, ...]
+              num_parent_asset_overrides:    int
+              num_pose_watches:              int
+              parent_anim_blueprint:         {name, path} or null
+              root_anim_blueprint:           {name, path} or null (null when this AnimBP is itself the root)
+
+            Returns an error if the asset is not a UAnimBlueprint.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command(
+                "get_anim_blueprint_info",
+                {"blueprint_path": blueprint_path},
+            )
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            error_msg = f"Error getting anim blueprint info: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_skeleton_bone_hierarchy(ctx: Context, skeleton_path: str) -> Dict[str, Any]:
         """Get the raw bone hierarchy of a USkeleton asset.
 
