@@ -377,7 +377,16 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_ik_retargeter_pin_bones_entry") ||
                      CommandType == TEXT("set_ik_retargeter_chain_mapping") ||
                      CommandType == TEXT("ik_retargeter_auto_map_chains") ||
-                     CommandType == TEXT("set_ik_retargeter_retarget_pose"))
+                     CommandType == TEXT("set_ik_retargeter_retarget_pose") ||
+                     CommandType == TEXT("set_chooser_table_result") ||
+                     CommandType == TEXT("set_chooser_table_fallback_result") ||
+                     CommandType == TEXT("add_chooser_table_parameter") ||
+                     CommandType == TEXT("remove_chooser_table_parameter") ||
+                     CommandType == TEXT("add_chooser_table_column") ||
+                     CommandType == TEXT("remove_chooser_table_column") ||
+                     CommandType == TEXT("set_chooser_table_column_binding") ||
+                     CommandType == TEXT("set_chooser_table_row_result") ||
+                     CommandType == TEXT("set_chooser_table_row_column_value"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

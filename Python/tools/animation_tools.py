@@ -5,7 +5,7 @@ Editor-only tools for reading data from AnimSequence / AnimMontage assets.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from mcp.server.fastmcp import FastMCP, Context
 
 logger = logging.getLogger("UnrealMCP")
@@ -609,28 +609,45 @@ def register_animation_tools(mcp: FastMCP):
 
     @mcp.tool()
     def get_chooser_table_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
-        """Read the static structure of a UChooserTable asset (Editor-only, read-only).
+        """Read the full structure of a UChooserTable asset (Editor-only).
 
-        Returns the column list (each column's struct name and editor-only
-        RowValues property name) and the result rows. Each result row is
-        classified by its FObjectChooserBase subclass:
-
-        - `asset`            → row's `asset_path` / `asset_class` point at a hard UObject reference
-        - `soft_asset`       → row's `soft_path` holds a TSoftObjectPtr
-        - `evaluate_chooser` → row references another ChooserTable (`nested_chooser_path`)
-        - `nested_chooser`   → row references another ChooserTable (`nested_chooser_path`)
-        - `unknown` / `empty` → unrecognised or uninitialised row
-
-        Per-cell condition values (float ranges, bool masks, gameplay tags, etc.)
-        are NOT returned; only the structural outline of the table is exposed.
+        Now covers top-level config (ResultType / ResultClass / Parameters +
+        FallbackResult) and per-column binding details + per-row cell values, in
+        addition to the original column / row outline.
 
         Args:
             asset_path: Full ChooserTable object path, e.g.
                 "/Game/.../CT_Locomotion.CT_Locomotion"
 
         Returns:
-            Dict with asset_path, asset_class, is_cooked_data, column_count,
-            columns list, row_count, used_cooked_results, results list.
+            Dict with:
+              asset_path, asset_class, is_cooked_data,
+              result_type: "ObjectResult" / "ClassResult" / "NoPrimaryResult",
+              result_class: {name, path} or null,
+              parameter_count, parameters: [
+                {index, struct_name, kind: "class"|"struct",
+                 class_or_struct: {name, path}, direction: "Input"/"Output"/"InputOutput"}, ...],
+              column_count, columns: [
+                {index, struct_name,
+                 has_filters, has_outputs, sub_type: "Input"/"Output"/"Mixed",
+                 row_values_property, b_disabled,
+                 binding: {binding_struct, context_index, is_bound_to_root,
+                           property_path:[...], path_as_text, display_name,
+                           enum_type / allowed_class / struct_type (if applicable)
+                          } or null
+                }, ...],
+              row_count, used_cooked_results,
+              results: [
+                {index, struct_name,
+                 kind: "asset"|"soft_asset"|"evaluate_chooser"|"nested_chooser"|"empty"|"unknown",
+                 asset_path / asset_class / soft_path / nested_chooser_path (by kind),
+                 column_values: [{column_index, value (UE JSON per column RowValue type)}, ...]
+                }, ...],
+              fallback_result: (same shape as a row result entry) or null
+
+            Per-cell `value` is serialized via UPropertyToJsonValue, so numeric /
+            enum / struct cells come out as JSON-native types; only rare exotic
+            column row-value types may produce `null`.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -1453,6 +1470,307 @@ def register_animation_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    # ---------------------------------------------------------------------
+    # Batch D (P1/P2/P3): ChooserTable write extensions
+    # ---------------------------------------------------------------------
+
+    @mcp.tool()
+    def set_chooser_table_result(
+        ctx: Context,
+        asset_path: str,
+        result_type: str,
+        result_class_path: str = "",
+    ) -> Dict[str, Any]:
+        """Set the Chooser's top-level Result Type and Result Class.
+
+        Args:
+            asset_path: ChooserTable object path.
+            result_type: "ObjectResult" (UI: "Object Of Type"), "ClassResult"
+                (UI: "SubClass Of"), or "NoPrimaryResult" (UI hidden; writes no
+                primary result — use with Output columns only).
+            result_class_path: Full UClass path (e.g. "/Script/Engine.AnimationAsset"
+                or "/Game/.../QuadAnimInstance_C"). Pass empty string to clear.
+
+        Note:
+            Changing `result_type` invalidates existing row Results. Re-verify rows
+            (`get_chooser_table_info`) and patch via `set_chooser_table_row_result`.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_chooser_table_result", {
+                "asset_path": asset_path,
+                "result_type": result_type,
+                "result_class_path": result_class_path,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_chooser_table_fallback_result(
+        ctx: Context,
+        asset_path: str,
+        result_asset_path: str = "",
+    ) -> Dict[str, Any]:
+        """Set (or clear) the Chooser's FallbackResult (used when no row matches).
+
+        Args:
+            asset_path: ChooserTable object path.
+            result_asset_path: Asset to use as fallback; empty string clears the fallback.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_chooser_table_fallback_result", {
+                "asset_path": asset_path,
+                "result_asset_path": result_asset_path,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_chooser_table_parameter(
+        ctx: Context,
+        asset_path: str,
+        kind: str,
+        class_or_struct_path: str,
+        direction: str = "Input",
+    ) -> Dict[str, Any]:
+        """Append a new Parameter (ContextData entry) to the Chooser.
+
+        Args:
+            asset_path: ChooserTable object path.
+            kind: "class" → FContextObjectTypeClass (for UObject-derived contexts,
+                  e.g. AnimInstance subclass).
+                  "struct" → FContextObjectTypeStruct (for USTRUCT contexts,
+                  used for Output columns writing to a struct).
+            class_or_struct_path: For kind="class" a UClass path
+                (e.g. "/Game/.../QuadAnimInstance_C"); for kind="struct" a
+                UScriptStruct path (e.g. "/Script/LeoPractice.QuadChooserOutputs").
+            direction: "Input" (UI default) / "Output" / "InputOutput"
+                (source enum: Read / Write / ReadWrite — auto-mapped).
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("add_chooser_table_parameter", {
+                "asset_path": asset_path,
+                "kind": kind,
+                "class_or_struct_path": class_or_struct_path,
+                "direction": direction,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_chooser_table_parameter(
+        ctx: Context,
+        asset_path: str,
+        parameter_index: int,
+    ) -> Dict[str, Any]:
+        """Remove a Parameter from the Chooser by index.
+
+        Column bindings referencing this Parameter may now be invalid — inspect
+        with `get_chooser_table_info` and fix via `set_chooser_table_column_binding`.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("remove_chooser_table_parameter", {
+                "asset_path": asset_path,
+                "parameter_index": parameter_index,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_chooser_table_column(
+        ctx: Context,
+        asset_path: str,
+        column_type: str,
+        binding_path_as_text: str = "",
+        context_index: int = 0,
+        enum_path: str = "",
+    ) -> Dict[str, Any]:
+        """Append a new column to the Chooser (Input or Output).
+
+        Args:
+            asset_path: ChooserTable object path.
+            column_type: Column struct name (bare or /Script/ form). Common values:
+                Input:  "EnumColumn", "MultiEnumColumn", "BoolColumn",
+                        "FloatRangeColumn", "GameplayTagColumn", "ObjectColumn",
+                        "ObjectClassColumn", "FloatDistanceColumn".
+                Output: "OutputBoolColumn", "OutputFloatColumn", "OutputEnumColumn",
+                        "OutputObjectColumn", "OutputStructColumn",
+                        "OutputGameplayTagQueryColumn".
+            binding_path_as_text: Dotted property path to bind the column's
+                InputValue to (e.g. "MovementState" if bound to the first Parameter,
+                or "QuadChooserOutputs.bUseMM" if bound to a struct parameter).
+                Empty string leaves the binding unset.
+            context_index: Which Parameter (0-based) the binding targets.
+            enum_path: UEnum path (required for EnumColumn / MultiEnumColumn
+                to populate FChooserEnumPropertyBinding::Enum). Ignored for
+                other column types.
+
+        Note:
+            RowValues array is auto-sized to current row count. Per-cell values
+            are left at default; use `set_chooser_table_row_column_value` to set.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {
+                "asset_path": asset_path,
+                "column_type": column_type,
+                "binding_path_as_text": binding_path_as_text,
+                "context_index": context_index,
+            }
+            if enum_path:
+                params["enum_path"] = enum_path
+            response = unreal.send_command("add_chooser_table_column", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_chooser_table_column(
+        ctx: Context,
+        asset_path: str,
+        column_index: int,
+    ) -> Dict[str, Any]:
+        """Remove a column from the Chooser by index (also removes its RowValues)."""
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("remove_chooser_table_column", {
+                "asset_path": asset_path,
+                "column_index": column_index,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_chooser_table_column_binding(
+        ctx: Context,
+        asset_path: str,
+        column_index: int,
+        binding_path_as_text: str,
+        context_index: int = 0,
+        enum_path: str = "",
+    ) -> Dict[str, Any]:
+        """Update an existing column's binding (property path + context index).
+
+        Useful for fixing broken bindings after Parameters have been reordered /
+        removed, or for pointing an existing column at a different field.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            params = {
+                "asset_path": asset_path,
+                "column_index": column_index,
+                "binding_path_as_text": binding_path_as_text,
+                "context_index": context_index,
+            }
+            if enum_path:
+                params["enum_path"] = enum_path
+            response = unreal.send_command("set_chooser_table_column_binding", params)
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_chooser_table_row_result(
+        ctx: Context,
+        asset_path: str,
+        row_index: int,
+        result_asset_path: str,
+    ) -> Dict[str, Any]:
+        """Replace the Result asset on a specific row.
+
+        UE5.7 Chooser stores one asset per row (FAssetChooser.Asset is not a
+        TArray). To represent "multiple candidate animations", use multiple rows
+        with different column values; each row outputs exactly one asset.
+        """
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_chooser_table_row_result", {
+                "asset_path": asset_path,
+                "row_index": row_index,
+                "result_asset_path": result_asset_path,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_chooser_table_row_column_value(
+        ctx: Context,
+        asset_path: str,
+        row_index: int,
+        column_index: int,
+        value: Union[str, bool, int, float],
+    ) -> Dict[str, Any]:
+        """Set a single cell value on a specific row / column.
+
+        Value goes through UE's `ImportText_Direct`, so the same T3D text format
+        rules apply as `set_ik_retargeter_op_field`:
+          - bool:    True / False / "true" / "false"
+          - int / float: 10 / 1.5 / "10" / "1.5"
+          - FName / FString / enum value: literal text
+          - struct cell (e.g. FChooserEnumRowData):
+              "(Comparison=MatchEqual,Value=2)"
+          - FloatRange row data: "(Min=0.0,Max=1.0)"
+          - array cell: "(elem1,elem2)"
+
+        Python bool/int/float inputs are stringified before sending (so literal
+        `False` == string "false") — same pydantic workaround baked in as
+        `set_ik_retargeter_op_field`.
+        """
+        if isinstance(value, bool):
+            value_str = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            value_str = str(value)
+        else:
+            value_str = value
+
+        try:
+            from unreal_mcp_server import get_unreal_connection
+            unreal = get_unreal_connection()
+            response = unreal.send_command("set_chooser_table_row_column_value", {
+                "asset_path": asset_path,
+                "row_index": row_index,
+                "column_index": column_index,
+                "value": value_str,
+            })
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     @mcp.tool()
     def set_animation_properties(
         ctx: Context,
@@ -1785,33 +2103,54 @@ def register_animation_tools(mcp: FastMCP):
         asset_path: str,
         op_index: int,
         field_path: str,
-        value: str,
+        value: Union[str, bool, int, float],
     ) -> Dict[str, Any]:
         """Set any property on a retarget op via reflection (generic field setter).
 
-        Uses ImportText_Direct under the hood, so `value` must be the same text
-        format that UE accepts in T3D / asset text dumps:
-          - bool:    "true" / "false"
-          - int / float: "10" / "1.5"
-          - FName / FString: literal text
+        Uses UE's ImportText_Direct server-side, so the value is ultimately
+        interpreted as text. To keep the MCP boundary forgiving, this wrapper
+        accepts bool / int / float / str and stringifies before sending — so
+        passing literal `False` (Python bool) is equivalent to passing `"false"`
+        (string).
+
+        Accepted value forms (by property type):
+          - bool:    True / False / "true" / "false"
+          - int / float: 10 / 1.5 / "10" / "1.5"
+          - FName / FString: literal text ("None" for empty FName)
           - enum: enum value name (e.g. "CopyGlobalPosition")
           - FVector: "(X=1,Y=2,Z=3)"
           - FRotator: "(Pitch=0,Yaw=90,Roll=0)"
           - FQuat: "(X=0,Y=0,Z=0,W=1)"
           - struct: "(Field1=...,Field2=...)"
           - array: "(elem1,elem2)"
+        Structured types (FVector / struct / array) must still be passed as
+        T3D-format strings — Python lists / dicts are NOT auto-converted.
 
         Args:
             asset_path: IKRetargeter asset path.
             op_index: Index of the op in the stack.
             field_path: Dotted property path on the op struct, e.g. "Settings.bCopyTranslation"
                         or "Settings.TranslationMode".
-            value: Text-form value matching the property type (see formats above).
+            value: Value to assign. See accepted forms above.
 
         Returns:
             Dict with success, asset_path, op_index, field_path, op_struct (struct name).
         """
         from unreal_mcp_server import get_unreal_connection
+
+        # Normalize to a UE ImportText-compatible string:
+        #   bool True/False → "true"/"false" (UE accepts lowercase)
+        #   int/float       → str()
+        #   str             → verbatim
+        # This shields the MCP boundary from JSON-RPC type coercion: Claude
+        # models often encode the literal "false" as a JSON boolean, which
+        # pydantic then rejects on a `value: str` field.
+        if isinstance(value, bool):
+            value_str = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            value_str = str(value)
+        else:
+            value_str = value
 
         try:
             unreal = get_unreal_connection()
@@ -1823,7 +2162,7 @@ def register_animation_tools(mcp: FastMCP):
                     "asset_path": asset_path,
                     "op_index": op_index,
                     "field_path": field_path,
-                    "value": value,
+                    "value": value_str,
                 },
             )
             if not response:

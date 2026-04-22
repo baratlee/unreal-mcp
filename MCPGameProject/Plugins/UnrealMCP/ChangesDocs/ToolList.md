@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 83 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 87。)
+> 92 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 96。)
 
 ---
 
@@ -84,12 +84,21 @@
 | `set_animation_properties` | 设置 AnimSequence 的 Root Motion 属性（enable/root_lock/force_lock/normalized_scale） |
 | `list_chooser_tables` | 通过 Asset Registry 列出项目中所有 UChooserTable 资产 |
 
-## Chooser Table Tools (3)
+## Chooser Table Tools (12)
 
 | Tool | Description |
 |---|---|
-| `get_chooser_table_info` | 读取 UChooserTable 的结构骨架：列定义 + 结果行（asset/nested_chooser 等 4 种 kind） |
+| `get_chooser_table_info` | 读取 UChooserTable 完整结构：result_type/result_class/parameters、列（sub_type+binding+enum_type）、行（含 column_values cell 值）、fallback_result |
+| `set_chooser_table_result` | 设顶层 Result Type + Result Class（ObjectResult/ClassResult/NoPrimaryResult） |
+| `set_chooser_table_fallback_result` | 设 / 清 FallbackResult（无匹配时的默认返回） |
+| `add_chooser_table_parameter` | 加 Parameter（class / struct，direction=Input/Output/InputOutput） |
+| `remove_chooser_table_parameter` | 按 index 移除 Parameter |
+| `add_chooser_table_column` | 加列（Enum/Bool/FloatRange/Output*... 全类型），可同时配 binding + enum_path |
+| `remove_chooser_table_column` | 按 index 移除列 |
+| `set_chooser_table_column_binding` | 重写已存在列的 Binding（property path + context index + enum_type） |
 | `add_chooser_table_row` | 添加行（asset result + 按列位置传入条件值，支持 Enum/Bool 列） |
+| `set_chooser_table_row_result` | 替换指定行的 Result 资产（单 asset per row） |
+| `set_chooser_table_row_column_value` | 按 row_index+column_index 设单元格（T3D 文本值，走 ImportText_Direct） |
 | `remove_chooser_table_row` | 按 index 移除行（同步移除所有列的行值） |
 
 ## IK Tools (17)

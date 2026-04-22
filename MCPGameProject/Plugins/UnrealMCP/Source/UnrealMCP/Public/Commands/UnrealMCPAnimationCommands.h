@@ -60,6 +60,17 @@ private:
     TSharedPtr<FJsonObject> HandleAddChooserTableRow(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleRemoveChooserTableRow(const TSharedPtr<FJsonObject>& Params);
 
+    // Chooser Table extension (Batch D): top-level config + column + row writes
+    TSharedPtr<FJsonObject> HandleSetChooserTableResult(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetChooserTableFallbackResult(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddChooserTableParameter(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveChooserTableParameter(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddChooserTableColumn(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveChooserTableColumn(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetChooserTableColumnBinding(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetChooserTableRowResult(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetChooserTableRowColumnValue(const TSharedPtr<FJsonObject>& Params);
+
     // Animation write tools
     TSharedPtr<FJsonObject> HandleSetAnimationProperties(const TSharedPtr<FJsonObject>& Params);
 

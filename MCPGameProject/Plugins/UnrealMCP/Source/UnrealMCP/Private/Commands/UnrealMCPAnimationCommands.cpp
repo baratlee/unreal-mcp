@@ -33,6 +33,9 @@
 #include "Chooser.h"
 #include "IObjectChooser.h"
 #include "IChooserColumn.h"
+#include "IChooserParameterBase.h"
+#include "ChooserPropertyAccess.h"
+#include "IHasContext.h"
 #include "ObjectChooser_Asset.h"
 #include "Rig/IKRigDefinition.h"
 #include "Retargeter/IKRetargeter.h"
@@ -290,6 +293,42 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("set_ik_retargeter_retarget_pose"))
     {
         return HandleSetIKRetargeterRetargetPose(Params);
+    }
+    if (CommandType == TEXT("set_chooser_table_result"))
+    {
+        return HandleSetChooserTableResult(Params);
+    }
+    if (CommandType == TEXT("set_chooser_table_fallback_result"))
+    {
+        return HandleSetChooserTableFallbackResult(Params);
+    }
+    if (CommandType == TEXT("add_chooser_table_parameter"))
+    {
+        return HandleAddChooserTableParameter(Params);
+    }
+    if (CommandType == TEXT("remove_chooser_table_parameter"))
+    {
+        return HandleRemoveChooserTableParameter(Params);
+    }
+    if (CommandType == TEXT("add_chooser_table_column"))
+    {
+        return HandleAddChooserTableColumn(Params);
+    }
+    if (CommandType == TEXT("remove_chooser_table_column"))
+    {
+        return HandleRemoveChooserTableColumn(Params);
+    }
+    if (CommandType == TEXT("set_chooser_table_column_binding"))
+    {
+        return HandleSetChooserTableColumnBinding(Params);
+    }
+    if (CommandType == TEXT("set_chooser_table_row_result"))
+    {
+        return HandleSetChooserTableRowResult(Params);
+    }
+    if (CommandType == TEXT("set_chooser_table_row_column_value"))
+    {
+        return HandleSetChooserTableRowColumnValue(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -1423,78 +1462,43 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListChooserTables(con
     return Result;
 }
 
-TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params)
+namespace
 {
-    FString AssetPath;
-    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    // Map EObjectChooserResultType enum → string that matches source enum names (not the UMETA display).
+    FString ChooserResultTypeToString(EObjectChooserResultType T)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
-    }
-
-    UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
-    if (!Table)
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("ChooserTable asset not found: %s"), *AssetPath));
-    }
-
-    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
-    Result->SetStringField(TEXT("asset_class"), Table->GetClass()->GetName());
-    Result->SetBoolField(TEXT("is_cooked_data"), Table->IsCookedData());
-
-    // Columns: one entry per ColumnsStructs slot. We output the column's struct name
-    // and (editor-only) the reflected RowValues property name so callers can tell
-    // which column kind it is without loading the Chooser module themselves.
-    TArray<TSharedPtr<FJsonValue>> ColumnsJson;
-    ColumnsJson.Reserve(Table->ColumnsStructs.Num());
-    for (int32 i = 0; i < Table->ColumnsStructs.Num(); ++i)
-    {
-        FInstancedStruct& ColInst = Table->ColumnsStructs[i];
-        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
-
-        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-        Entry->SetNumberField(TEXT("index"), i);
-        Entry->SetStringField(TEXT("struct_name"), ColStruct ? ColStruct->GetName() : FString());
-
-#if WITH_EDITOR
-        if (ColStruct && ColInst.IsValid())
+        switch (T)
         {
-            FChooserColumnBase& ColBase = ColInst.GetMutable<FChooserColumnBase>();
-            Entry->SetStringField(TEXT("row_values_property"), ColBase.RowValuesPropertyName().ToString());
+            case EObjectChooserResultType::ObjectResult:    return TEXT("ObjectResult");
+            case EObjectChooserResultType::ClassResult:     return TEXT("ClassResult");
+            case EObjectChooserResultType::NoPrimaryResult: return TEXT("NoPrimaryResult");
+            default:                                         return TEXT("Unknown");
         }
-#endif
-
-        ColumnsJson.Add(MakeShared<FJsonValueObject>(Entry));
-    }
-    Result->SetNumberField(TEXT("column_count"), Table->ColumnsStructs.Num());
-    Result->SetArrayField(TEXT("columns"), ColumnsJson);
-
-    // Results: ResultsStructs carries the authored row order (editor-only). For a
-    // cooked asset that array is gone and CookedResults takes over, so fall through
-    // to it when the authored data is empty.
-    TArrayView<const FInstancedStruct> ResultsView;
-    bool bUsedCooked = false;
-#if WITH_EDITORONLY_DATA
-    if (Table->ResultsStructs.Num() > 0)
-    {
-        ResultsView = MakeArrayView(Table->ResultsStructs.GetData(), Table->ResultsStructs.Num());
-    }
-    else
-#endif
-    {
-        ResultsView = MakeArrayView(Table->CookedResults.GetData(), Table->CookedResults.Num());
-        bUsedCooked = true;
     }
 
-    TArray<TSharedPtr<FJsonValue>> ResultsJson;
-    ResultsJson.Reserve(ResultsView.Num());
-    for (int32 i = 0; i < ResultsView.Num(); ++i)
+    // Map EContextObjectDirection (source: Read/Write/ReadWrite) → UI-visible Input/Output/InputOutput.
+    FString ContextObjectDirectionToString(EContextObjectDirection D)
     {
-        const FInstancedStruct& ResultInst = ResultsView[i];
+        switch (D)
+        {
+            case EContextObjectDirection::Read:      return TEXT("Input");
+            case EContextObjectDirection::Write:     return TEXT("Output");
+            case EContextObjectDirection::ReadWrite: return TEXT("InputOutput");
+            default:                                  return TEXT("Unknown");
+        }
+    }
+
+    // Serialize a Chooser Row Result FInstancedStruct into a JSON entry.
+    // Used for both row results and the FallbackResult field.
+    TSharedPtr<FJsonObject> SerializeChooserResult(const FInstancedStruct& ResultInst, int32 Index)
+    {
         const UScriptStruct* RStruct = ResultInst.GetScriptStruct();
 
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-        Entry->SetNumberField(TEXT("index"), i);
+        if (Index >= 0)
+        {
+            Entry->SetNumberField(TEXT("index"), Index);
+        }
         Entry->SetStringField(TEXT("struct_name"), RStruct ? RStruct->GetName() : FString());
 
         if (!RStruct || !ResultInst.IsValid())
@@ -1539,6 +1543,354 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(c
         {
             Entry->SetStringField(TEXT("kind"), TEXT("unknown"));
         }
+        return Entry;
+    }
+
+    // Serialize one FContextObjectTypeBase subclass (either FContextObjectTypeClass or FContextObjectTypeStruct).
+    TSharedPtr<FJsonObject> SerializeChooserParameter(const FInstancedStruct& ParamInst, int32 Index)
+    {
+        const UScriptStruct* Kind = ParamInst.GetScriptStruct();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), Index);
+        Entry->SetStringField(TEXT("struct_name"), Kind ? Kind->GetName() : FString());
+
+        if (!Kind || !ParamInst.IsValid())
+        {
+            Entry->SetStringField(TEXT("kind"), TEXT("empty"));
+            return Entry;
+        }
+
+        const FContextObjectTypeBase* Base = ParamInst.GetPtr<FContextObjectTypeBase>();
+        if (!Base)
+        {
+            Entry->SetStringField(TEXT("kind"), TEXT("unknown"));
+            return Entry;
+        }
+        Entry->SetStringField(TEXT("direction"), ContextObjectDirectionToString(Base->Direction));
+
+        if (Kind == FContextObjectTypeClass::StaticStruct())
+        {
+            const FContextObjectTypeClass& C = ParamInst.Get<FContextObjectTypeClass>();
+            Entry->SetStringField(TEXT("kind"), TEXT("class"));
+            TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+            if (C.Class)
+            {
+                Ref->SetStringField(TEXT("name"), C.Class->GetName());
+                Ref->SetStringField(TEXT("path"), C.Class->GetPathName());
+            }
+            Entry->SetObjectField(TEXT("class_or_struct"), Ref);
+        }
+        else if (Kind == FContextObjectTypeStruct::StaticStruct())
+        {
+            const FContextObjectTypeStruct& S = ParamInst.Get<FContextObjectTypeStruct>();
+            Entry->SetStringField(TEXT("kind"), TEXT("struct"));
+            TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+            if (S.Struct)
+            {
+                Ref->SetStringField(TEXT("name"), S.Struct->GetName());
+                Ref->SetStringField(TEXT("path"), S.Struct->GetPathName());
+            }
+            Entry->SetObjectField(TEXT("class_or_struct"), Ref);
+        }
+        else
+        {
+            Entry->SetStringField(TEXT("kind"), TEXT("unknown"));
+        }
+        return Entry;
+    }
+
+    // Reach into a column's FInstancedStruct InputValue to extract the embedded
+    // FChooserPropertyBinding (or a subclass-specific enum_type / allowed_class /
+    // struct_type). Works by reflection on the parameter struct: every chooser
+    // parameter class inherited from FChooserParameterBase exposes its binding
+    // as a FStructProperty named "Binding" (per CHOOSER_PARAMETER_BOILERPLATE).
+    TSharedPtr<FJsonObject> SerializeChooserColumnBinding(const FInstancedStruct& ColInst)
+    {
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+        if (!ColStruct || !ColInst.IsValid())
+        {
+            return nullptr;
+        }
+
+        // Find InputValue FStructProperty on the column (itself an FInstancedStruct).
+        FStructProperty* InputValueProp = FindFProperty<FStructProperty>(ColStruct, TEXT("InputValue"));
+        if (!InputValueProp)
+        {
+            return nullptr;
+        }
+        const FInstancedStruct* InputValue = InputValueProp->ContainerPtrToValuePtr<FInstancedStruct>(ColInst.GetMemory());
+        if (!InputValue || !InputValue->IsValid())
+        {
+            return nullptr;
+        }
+
+        const UScriptStruct* ParamStruct = InputValue->GetScriptStruct();
+        if (!ParamStruct)
+        {
+            return nullptr;
+        }
+
+        // Find Binding FStructProperty on the parameter struct.
+        FStructProperty* BindingProp = FindFProperty<FStructProperty>(ParamStruct, TEXT("Binding"));
+        if (!BindingProp || !BindingProp->Struct)
+        {
+            return nullptr;
+        }
+        const void* BindingMem = BindingProp->ContainerPtrToValuePtr<void>(InputValue->GetMemory());
+        if (!BindingMem)
+        {
+            return nullptr;
+        }
+
+        // Base fields from FChooserPropertyBinding (PropertyBindingChain / ContextIndex / IsBoundToRoot / DisplayName).
+        const FChooserPropertyBinding* Binding = static_cast<const FChooserPropertyBinding*>(BindingMem);
+
+        TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+        Out->SetStringField(TEXT("binding_struct"), BindingProp->Struct->GetName());
+        Out->SetNumberField(TEXT("context_index"), Binding->ContextIndex);
+        Out->SetBoolField(TEXT("is_bound_to_root"), Binding->IsBoundToRoot);
+
+        TArray<TSharedPtr<FJsonValue>> ChainJson;
+        ChainJson.Reserve(Binding->PropertyBindingChain.Num());
+        for (const FName& Seg : Binding->PropertyBindingChain)
+        {
+            ChainJson.Add(MakeShared<FJsonValueString>(Seg.ToString()));
+        }
+        Out->SetArrayField(TEXT("property_path"), ChainJson);
+
+        FString Joined;
+        for (int32 i = 0; i < Binding->PropertyBindingChain.Num(); ++i)
+        {
+            if (i > 0) Joined += TEXT(".");
+            Joined += Binding->PropertyBindingChain[i].ToString();
+        }
+        Out->SetStringField(TEXT("path_as_text"), Joined);
+
+#if WITH_EDITORONLY_DATA
+        Out->SetStringField(TEXT("display_name"), Binding->DisplayName);
+#endif
+
+        // Subclass-specific fields (editor-only).
+#if WITH_EDITORONLY_DATA
+        if (BindingProp->Struct->IsChildOf(FChooserEnumPropertyBinding::StaticStruct()))
+        {
+            const FChooserEnumPropertyBinding* EB = static_cast<const FChooserEnumPropertyBinding*>(BindingMem);
+            if (EB->Enum)
+            {
+                TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+                Ref->SetStringField(TEXT("name"), EB->Enum->GetName());
+                Ref->SetStringField(TEXT("path"), EB->Enum->GetPathName());
+                Out->SetObjectField(TEXT("enum_type"), Ref);
+            }
+        }
+        else if (BindingProp->Struct->IsChildOf(FChooserObjectPropertyBinding::StaticStruct()))
+        {
+            const FChooserObjectPropertyBinding* OB = static_cast<const FChooserObjectPropertyBinding*>(BindingMem);
+            if (OB->AllowedClass)
+            {
+                TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+                Ref->SetStringField(TEXT("name"), OB->AllowedClass->GetName());
+                Ref->SetStringField(TEXT("path"), OB->AllowedClass->GetPathName());
+                Out->SetObjectField(TEXT("allowed_class"), Ref);
+            }
+        }
+        else if (BindingProp->Struct->IsChildOf(FChooserStructPropertyBinding::StaticStruct()))
+        {
+            const FChooserStructPropertyBinding* SB = static_cast<const FChooserStructPropertyBinding*>(BindingMem);
+            if (SB->StructType)
+            {
+                TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+                Ref->SetStringField(TEXT("name"), SB->StructType->GetName());
+                Ref->SetStringField(TEXT("path"), SB->StructType->GetPathName());
+                Out->SetObjectField(TEXT("struct_type"), Ref);
+            }
+        }
+#endif
+
+        return Out;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
+    if (!Table)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("ChooserTable asset not found: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetStringField(TEXT("asset_class"), Table->GetClass()->GetName());
+    Result->SetBoolField(TEXT("is_cooked_data"), Table->IsCookedData());
+
+    // --- Top-level configuration (UChooserSignature parent) ---
+    Result->SetStringField(TEXT("result_type"), ChooserResultTypeToString(Table->ResultType));
+
+    if (Table->OutputObjectType)
+    {
+        TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+        Ref->SetStringField(TEXT("name"), Table->OutputObjectType->GetName());
+        Ref->SetStringField(TEXT("path"), Table->OutputObjectType->GetPathName());
+        Result->SetObjectField(TEXT("result_class"), Ref);
+    }
+    else
+    {
+        Result->SetField(TEXT("result_class"), MakeShared<FJsonValueNull>());
+    }
+
+    // Parameters (UI name) / ContextData (source field).
+    TArray<TSharedPtr<FJsonValue>> ParamsJson;
+    ParamsJson.Reserve(Table->ContextData.Num());
+    for (int32 i = 0; i < Table->ContextData.Num(); ++i)
+    {
+        ParamsJson.Add(MakeShared<FJsonValueObject>(SerializeChooserParameter(Table->ContextData[i], i)));
+    }
+    Result->SetNumberField(TEXT("parameter_count"), Table->ContextData.Num());
+    Result->SetArrayField(TEXT("parameters"), ParamsJson);
+
+    // --- Columns ---
+    // One entry per ColumnsStructs slot. Now includes:
+    //   - has_filters / has_outputs (virtual methods on FChooserColumnBase)
+    //   - sub_type: "Input" / "Output" / "Mixed" (derived from has_filters/has_outputs)
+    //   - binding: dict from InputValue → Binding sub-struct (property path, context index,
+    //     enum / allowed_class / struct_type sub-fields where applicable)
+    //   - b_disabled (editor-only)
+    TArray<TSharedPtr<FJsonValue>> ColumnsJson;
+    ColumnsJson.Reserve(Table->ColumnsStructs.Num());
+    for (int32 i = 0; i < Table->ColumnsStructs.Num(); ++i)
+    {
+        FInstancedStruct& ColInst = Table->ColumnsStructs[i];
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("index"), i);
+        Entry->SetStringField(TEXT("struct_name"), ColStruct ? ColStruct->GetName() : FString());
+
+        if (ColStruct && ColInst.IsValid())
+        {
+            const FChooserColumnBase& ColBase = ColInst.Get<FChooserColumnBase>();
+            Entry->SetBoolField(TEXT("has_filters"), ColBase.HasFilters());
+            Entry->SetBoolField(TEXT("has_outputs"), ColBase.HasOutputs());
+
+            FString SubType;
+            if (ColBase.HasFilters() && ColBase.HasOutputs()) SubType = TEXT("Mixed");
+            else if (ColBase.HasOutputs())                    SubType = TEXT("Output");
+            else                                              SubType = TEXT("Input");
+            Entry->SetStringField(TEXT("sub_type"), SubType);
+
+#if WITH_EDITORONLY_DATA
+            Entry->SetBoolField(TEXT("b_disabled"), ColBase.bDisabled);
+#endif
+
+#if WITH_EDITOR
+            // RowValuesPropertyName() requires non-const access
+            FChooserColumnBase& ColBaseMut = ColInst.GetMutable<FChooserColumnBase>();
+            Entry->SetStringField(TEXT("row_values_property"), ColBaseMut.RowValuesPropertyName().ToString());
+#endif
+
+            if (TSharedPtr<FJsonObject> BindingJson = SerializeChooserColumnBinding(ColInst))
+            {
+                Entry->SetObjectField(TEXT("binding"), BindingJson);
+            }
+            else
+            {
+                Entry->SetField(TEXT("binding"), MakeShared<FJsonValueNull>());
+            }
+        }
+
+        ColumnsJson.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    Result->SetNumberField(TEXT("column_count"), Table->ColumnsStructs.Num());
+    Result->SetArrayField(TEXT("columns"), ColumnsJson);
+
+    // --- Results (rows) ---
+    TArrayView<const FInstancedStruct> ResultsView;
+    bool bUsedCooked = false;
+#if WITH_EDITORONLY_DATA
+    if (Table->ResultsStructs.Num() > 0)
+    {
+        ResultsView = MakeArrayView(Table->ResultsStructs.GetData(), Table->ResultsStructs.Num());
+    }
+    else
+#endif
+    {
+        ResultsView = MakeArrayView(Table->CookedResults.GetData(), Table->CookedResults.Num());
+        bUsedCooked = true;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ResultsJson;
+    ResultsJson.Reserve(ResultsView.Num());
+    for (int32 i = 0; i < ResultsView.Num(); ++i)
+    {
+        TSharedPtr<FJsonObject> Entry = SerializeChooserResult(ResultsView[i], i);
+
+        // --- Per-row column_values ---
+        // For each column in this Chooser, reflect out its RowValues[i] entry so the
+        // caller can verify what matching / output value a given row has per column.
+        TArray<TSharedPtr<FJsonValue>> RowColValsJson;
+        RowColValsJson.Reserve(Table->ColumnsStructs.Num());
+        for (int32 c = 0; c < Table->ColumnsStructs.Num(); ++c)
+        {
+            FInstancedStruct& ColInst = Table->ColumnsStructs[c];
+            const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+
+            TSharedPtr<FJsonObject> Cell = MakeShared<FJsonObject>();
+            Cell->SetNumberField(TEXT("column_index"), c);
+
+            if (!ColStruct || !ColInst.IsValid())
+            {
+                Cell->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+                RowColValsJson.Add(MakeShared<FJsonValueObject>(Cell));
+                continue;
+            }
+
+#if WITH_EDITOR
+            const FName RowValsPropName = ColInst.GetMutable<FChooserColumnBase>().RowValuesPropertyName();
+            FArrayProperty* RowValsProp = FindFProperty<FArrayProperty>(ColStruct, RowValsPropName);
+#else
+            FArrayProperty* RowValsProp = FindFProperty<FArrayProperty>(ColStruct, TEXT("RowValues"));
+#endif
+
+            if (!RowValsProp || !RowValsProp->Inner)
+            {
+                Cell->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+                RowColValsJson.Add(MakeShared<FJsonValueObject>(Cell));
+                continue;
+            }
+
+            FScriptArrayHelper ArrayHelper(RowValsProp, RowValsProp->ContainerPtrToValuePtr<void>(ColInst.GetMutableMemory()));
+            if (!ArrayHelper.IsValidIndex(i))
+            {
+                Cell->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+                RowColValsJson.Add(MakeShared<FJsonValueObject>(Cell));
+                continue;
+            }
+
+            const void* ElemPtr = ArrayHelper.GetRawPtr(i);
+            TSharedPtr<FJsonValue> CellJson = FJsonObjectConverter::UPropertyToJsonValue(
+                RowValsProp->Inner,
+                ElemPtr,
+                /*CheckFlags=*/0,
+                /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
+            if (CellJson.IsValid())
+            {
+                Cell->SetField(TEXT("value"), CellJson);
+            }
+            else
+            {
+                Cell->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+            }
+            RowColValsJson.Add(MakeShared<FJsonValueObject>(Cell));
+        }
+        Entry->SetArrayField(TEXT("column_values"), RowColValsJson);
 
         ResultsJson.Add(MakeShared<FJsonValueObject>(Entry));
     }
@@ -1546,6 +1898,17 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetChooserTableInfo(c
     Result->SetNumberField(TEXT("row_count"), ResultsView.Num());
     Result->SetBoolField(TEXT("used_cooked_results"), bUsedCooked);
     Result->SetArrayField(TEXT("results"), ResultsJson);
+
+    // --- Fallback result (same shape as a row result entry) ---
+    if (Table->FallbackResult.IsValid())
+    {
+        Result->SetObjectField(TEXT("fallback_result"), SerializeChooserResult(Table->FallbackResult, INDEX_NONE));
+    }
+    else
+    {
+        Result->SetField(TEXT("fallback_result"), MakeShared<FJsonValueNull>());
+    }
+
     return Result;
 }
 
@@ -4635,5 +4998,664 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterRetarg
     };
     Result->SetArrayField(TEXT("applied_quat"), AppliedQuat);
     Result->SetStringField(TEXT("note"), TEXT("Always operates on current retarget pose. Switch active pose first via SetCurrentRetargetPose if you need a different target."));
+    return Result;
+}
+
+// =============================================================================
+// Batch D (P1/P2/P3): Chooser Table write tools
+// (top-level config + parameters + columns + row-level extensions)
+// =============================================================================
+
+namespace
+{
+    UChooserTable* LoadChooserTableOrError(const FString& AssetPath, TSharedPtr<FJsonObject>& OutError)
+    {
+        UChooserTable* Table = LoadObject<UChooserTable>(nullptr, *AssetPath);
+        if (!Table)
+        {
+            OutError = FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("ChooserTable asset not found: %s"), *AssetPath));
+        }
+        return Table;
+    }
+
+    bool ParseChooserResultType(const FString& InStr, EObjectChooserResultType& Out, FString& OutError)
+    {
+        if (InStr.Equals(TEXT("ObjectResult"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("Object Of Type"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("Object"), ESearchCase::IgnoreCase))
+        {
+            Out = EObjectChooserResultType::ObjectResult; return true;
+        }
+        if (InStr.Equals(TEXT("ClassResult"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("SubClass Of"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("Class"), ESearchCase::IgnoreCase))
+        {
+            Out = EObjectChooserResultType::ClassResult; return true;
+        }
+        if (InStr.Equals(TEXT("NoPrimaryResult"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+        {
+            Out = EObjectChooserResultType::NoPrimaryResult; return true;
+        }
+        OutError = FString::Printf(TEXT("Invalid result_type '%s' (expected ObjectResult / ClassResult / NoPrimaryResult)"), *InStr);
+        return false;
+    }
+
+    bool ParseContextObjectDirection(const FString& InStr, EContextObjectDirection& Out, FString& OutError)
+    {
+        if (InStr.Equals(TEXT("Input"), ESearchCase::IgnoreCase) || InStr.Equals(TEXT("Read"), ESearchCase::IgnoreCase))
+        {
+            Out = EContextObjectDirection::Read; return true;
+        }
+        if (InStr.Equals(TEXT("Output"), ESearchCase::IgnoreCase) || InStr.Equals(TEXT("Write"), ESearchCase::IgnoreCase))
+        {
+            Out = EContextObjectDirection::Write; return true;
+        }
+        if (InStr.Equals(TEXT("InputOutput"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("Input/Output"), ESearchCase::IgnoreCase)
+            || InStr.Equals(TEXT("ReadWrite"), ESearchCase::IgnoreCase))
+        {
+            Out = EContextObjectDirection::ReadWrite; return true;
+        }
+        OutError = FString::Printf(TEXT("Invalid direction '%s' (expected Input / Output / InputOutput)"), *InStr);
+        return false;
+    }
+
+    // Resolve "FooColumn" / "FFooColumn" / "/Script/Chooser.FooColumn" → UScriptStruct*.
+    UScriptStruct* ResolveColumnStruct(const FString& InName)
+    {
+        if (InName.StartsWith(TEXT("/Script/")))
+        {
+            return FindObject<UScriptStruct>(nullptr, *InName);
+        }
+        return FindFirstObject<UScriptStruct>(*InName, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+    }
+
+    // Write PropertyBindingChain + ContextIndex on the Binding sub-struct of a column's
+    // InputValue FInstancedStruct. Splits `PathAsText` on "." to build the chain.
+    // Optional EnumToSet sets FChooserEnumPropertyBinding::Enum for Enum columns.
+    bool ApplyBindingToColumn(FInstancedStruct& ColInst, const FString& PathAsText, int32 ContextIndex, UEnum* EnumToSet, FString& OutError)
+    {
+        const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+        if (!ColStruct || !ColInst.IsValid())
+        {
+            OutError = TEXT("Invalid column InstancedStruct");
+            return false;
+        }
+        FStructProperty* InputValueProp = FindFProperty<FStructProperty>(ColStruct, TEXT("InputValue"));
+        if (!InputValueProp)
+        {
+            OutError = FString::Printf(TEXT("Column '%s' has no InputValue property"), *ColStruct->GetName());
+            return false;
+        }
+        FInstancedStruct* InputValue = InputValueProp->ContainerPtrToValuePtr<FInstancedStruct>(ColInst.GetMutableMemory());
+        if (!InputValue || !InputValue->IsValid())
+        {
+            OutError = TEXT("Column InputValue is not initialized");
+            return false;
+        }
+        const UScriptStruct* ParamStruct = InputValue->GetScriptStruct();
+        if (!ParamStruct)
+        {
+            OutError = TEXT("Column InputValue has no ScriptStruct");
+            return false;
+        }
+        FStructProperty* BindingProp = FindFProperty<FStructProperty>(ParamStruct, TEXT("Binding"));
+        if (!BindingProp || !BindingProp->Struct)
+        {
+            OutError = FString::Printf(TEXT("Parameter struct '%s' has no Binding property"), *ParamStruct->GetName());
+            return false;
+        }
+        FChooserPropertyBinding* Binding = static_cast<FChooserPropertyBinding*>(
+            BindingProp->ContainerPtrToValuePtr<void>(InputValue->GetMutableMemory()));
+
+        Binding->PropertyBindingChain.Reset();
+        TArray<FString> Segments;
+        PathAsText.ParseIntoArray(Segments, TEXT("."), true);
+        for (const FString& Seg : Segments)
+        {
+            Binding->PropertyBindingChain.Add(FName(*Seg));
+        }
+        Binding->ContextIndex = ContextIndex;
+        Binding->IsBoundToRoot = false;
+#if WITH_EDITORONLY_DATA
+        Binding->DisplayName = PathAsText;
+#endif
+
+#if WITH_EDITORONLY_DATA
+        if (EnumToSet && BindingProp->Struct->IsChildOf(FChooserEnumPropertyBinding::StaticStruct()))
+        {
+            FChooserEnumPropertyBinding* EB = static_cast<FChooserEnumPropertyBinding*>(
+                BindingProp->ContainerPtrToValuePtr<void>(InputValue->GetMutableMemory()));
+            EB->Enum = EnumToSet;
+        }
+#endif
+        return true;
+    }
+
+#if WITH_EDITOR
+    // When a write touches the Chooser, we need to trigger its Compile to re-propagate
+    // bindings and keep the asset consistent. Also keep RowValues arrays sized to Results.
+    void PostWriteChooserCompile(UChooserTable* Table)
+    {
+        if (!Table) return;
+        Table->Compile(/*bForce=*/true);
+    }
+
+    // Resize every column's RowValues array to match Results count (editor-only code path
+    // that the Chooser editor normally runs). Needed after add_chooser_table_column and
+    // after add/remove row to keep per-column row arrays consistent.
+    void SyncChooserColumnRowCounts(UChooserTable* Table)
+    {
+        if (!Table) return;
+        const int32 NumRows = Table->ResultsStructs.Num();
+        for (FInstancedStruct& ColInst : Table->ColumnsStructs)
+        {
+            if (!ColInst.IsValid()) continue;
+            ColInst.GetMutable<FChooserColumnBase>().SetNumRows(NumRows);
+        }
+    }
+#endif
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableResult(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ResultTypeStr, ResultClassPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("result_type"), ResultTypeStr))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'result_type' parameter"));
+    Params->TryGetStringField(TEXT("result_class_path"), ResultClassPath); // optional
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    EObjectChooserResultType NewType;
+    FString ParseErr;
+    if (!ParseChooserResultType(ResultTypeStr, NewType, ParseErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(ParseErr);
+    }
+    Table->ResultType = NewType;
+
+    UClass* NewClass = nullptr;
+    if (!ResultClassPath.IsEmpty())
+    {
+        NewClass = LoadObject<UClass>(nullptr, *ResultClassPath);
+        if (!NewClass)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("result_class_path not found: %s"), *ResultClassPath));
+        }
+    }
+    Table->OutputObjectType = NewClass;
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetStringField(TEXT("result_type"), ResultTypeStr);
+    Result->SetStringField(TEXT("result_class_path"), ResultClassPath);
+    Result->SetStringField(TEXT("note"), TEXT("Changing ResultType invalidates existing row Results — verify rows afterwards."));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableFallbackResult(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ResultAssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    Params->TryGetStringField(TEXT("result_asset_path"), ResultAssetPath); // empty → clear
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    if (ResultAssetPath.IsEmpty())
+    {
+        Table->FallbackResult.Reset();
+    }
+    else
+    {
+        UObject* Asset = LoadObject<UObject>(nullptr, *ResultAssetPath);
+        if (!Asset)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Fallback result asset not found: %s"), *ResultAssetPath));
+        }
+        FAssetChooser NewFallback;
+        NewFallback.Asset = Asset;
+        Table->FallbackResult.InitializeAs(FAssetChooser::StaticStruct(), reinterpret_cast<const uint8*>(&NewFallback));
+    }
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetStringField(TEXT("result_asset_path"), ResultAssetPath);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableParameter(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, Kind, ClassOrStructPath, DirectionStr;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("kind"), Kind))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'kind' parameter (expected 'class' or 'struct')"));
+    if (!Params->TryGetStringField(TEXT("class_or_struct_path"), ClassOrStructPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'class_or_struct_path' parameter"));
+    Params->TryGetStringField(TEXT("direction"), DirectionStr);
+    if (DirectionStr.IsEmpty()) DirectionStr = TEXT("Input");
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    EContextObjectDirection Dir;
+    FString DirErr;
+    if (!ParseContextObjectDirection(DirectionStr, Dir, DirErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(DirErr);
+    }
+
+    FInstancedStruct NewParam;
+    if (Kind.Equals(TEXT("class"), ESearchCase::IgnoreCase))
+    {
+        UClass* TargetClass = LoadObject<UClass>(nullptr, *ClassOrStructPath);
+        if (!TargetClass)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("class not found: %s"), *ClassOrStructPath));
+        }
+        FContextObjectTypeClass ParamVal;
+        ParamVal.Class = TargetClass;
+        ParamVal.Direction = Dir;
+        NewParam.InitializeAs(FContextObjectTypeClass::StaticStruct(), reinterpret_cast<const uint8*>(&ParamVal));
+    }
+    else if (Kind.Equals(TEXT("struct"), ESearchCase::IgnoreCase))
+    {
+        UScriptStruct* TargetStruct = FindObject<UScriptStruct>(nullptr, *ClassOrStructPath);
+        if (!TargetStruct)
+        {
+            TargetStruct = FindFirstObject<UScriptStruct>(*ClassOrStructPath, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+        }
+        if (!TargetStruct)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("struct not found: %s"), *ClassOrStructPath));
+        }
+        FContextObjectTypeStruct ParamVal;
+        ParamVal.Struct = TargetStruct;
+        ParamVal.Direction = Dir;
+        NewParam.InitializeAs(FContextObjectTypeStruct::StaticStruct(), reinterpret_cast<const uint8*>(&ParamVal));
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid 'kind' value: %s (expected 'class' or 'struct')"), *Kind));
+    }
+
+    const int32 NewIndex = Table->ContextData.Add(MoveTemp(NewParam));
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("parameter_index"), NewIndex);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableParameter(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    int32 ParamIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("parameter_index"), ParamIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parameter_index' parameter"));
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    if (!Table->ContextData.IsValidIndex(ParamIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("parameter_index %d out of range [0..%d)"), ParamIndex, Table->ContextData.Num()));
+    }
+    Table->ContextData.RemoveAt(ParamIndex);
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("removed_parameter_index"), ParamIndex);
+    Result->SetNumberField(TEXT("parameter_count"), Table->ContextData.Num());
+    Result->SetStringField(TEXT("note"), TEXT("Column bindings referencing this parameter may now be invalid — inspect with get_chooser_table_info and fix via set_chooser_table_column_binding."));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableColumn(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ColumnType, PathAsText, EnumPath;
+    int32 ContextIndex = 0;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("column_type"), ColumnType))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'column_type' parameter (e.g. EnumColumn / BoolColumn / OutputBoolColumn)"));
+    Params->TryGetStringField(TEXT("binding_path_as_text"), PathAsText);
+    Params->TryGetNumberField(TEXT("context_index"), ContextIndex);
+    Params->TryGetStringField(TEXT("enum_path"), EnumPath); // optional: for EnumColumn/MultiEnumColumn
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    UScriptStruct* ColStruct = ResolveColumnStruct(ColumnType);
+    if (!ColStruct)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Unknown column type '%s' (pass bare struct name or /Script/Chooser.<name>)"), *ColumnType));
+    }
+    if (!ColStruct->IsChildOf(FChooserColumnBase::StaticStruct()))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Struct '%s' is not a FChooserColumnBase subclass"), *ColStruct->GetName()));
+    }
+
+    UEnum* EnumToSet = nullptr;
+    if (!EnumPath.IsEmpty())
+    {
+        EnumToSet = LoadObject<UEnum>(nullptr, *EnumPath);
+        if (!EnumToSet)
+        {
+            EnumToSet = FindFirstObject<UEnum>(*EnumPath, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+        }
+        if (!EnumToSet)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("enum_path not found: %s"), *EnumPath));
+        }
+    }
+
+    FInstancedStruct NewCol;
+    NewCol.InitializeAs(ColStruct);
+
+#if WITH_EDITOR
+    // CHOOSER_COLUMN_BOILERPLATE sets up the default InputValue ParamStruct
+    // inside the column's constructor. Apply binding if a path was provided.
+    FChooserColumnBase& ColBase = NewCol.GetMutable<FChooserColumnBase>();
+
+    // Ensure the column's InputValue has a default parameter struct initialized.
+    // CHOOSER_COLUMN_BOILERPLATE's SetInputType defaults to ParameterType::StaticStruct,
+    // which the concrete column subclass's GetInputBaseType returns. The column
+    // constructor already called this, but we play safe in case the InputValue is empty.
+    if (UScriptStruct* BaseType = ColBase.GetInputBaseType())
+    {
+        FStructProperty* InputValueProp = FindFProperty<FStructProperty>(ColStruct, TEXT("InputValue"));
+        if (InputValueProp)
+        {
+            FInstancedStruct* InputValue = InputValueProp->ContainerPtrToValuePtr<FInstancedStruct>(NewCol.GetMutableMemory());
+            if (InputValue && !InputValue->IsValid())
+            {
+                InputValue->InitializeAs(BaseType);
+            }
+        }
+    }
+#endif
+
+    if (!PathAsText.IsEmpty())
+    {
+        FString ApplyErr;
+        if (!ApplyBindingToColumn(NewCol, PathAsText, ContextIndex, EnumToSet, ApplyErr))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("ApplyBindingToColumn failed: %s"), *ApplyErr));
+        }
+    }
+
+    const int32 NewIndex = Table->ColumnsStructs.Add(MoveTemp(NewCol));
+
+#if WITH_EDITOR
+    // Size the new column's RowValues array to match current row count.
+    SyncChooserColumnRowCounts(Table);
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("column_index"), NewIndex);
+    Result->SetStringField(TEXT("column_struct"), ColStruct->GetName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableColumn(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    int32 ColumnIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("column_index"), ColumnIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'column_index' parameter"));
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    if (!Table->ColumnsStructs.IsValidIndex(ColumnIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("column_index %d out of range [0..%d)"), ColumnIndex, Table->ColumnsStructs.Num()));
+    }
+    Table->ColumnsStructs.RemoveAt(ColumnIndex);
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("removed_column_index"), ColumnIndex);
+    Result->SetNumberField(TEXT("column_count"), Table->ColumnsStructs.Num());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableColumnBinding(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, PathAsText, EnumPath;
+    int32 ColumnIndex = INDEX_NONE;
+    int32 ContextIndex = 0;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("column_index"), ColumnIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'column_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("binding_path_as_text"), PathAsText))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'binding_path_as_text' parameter"));
+    Params->TryGetNumberField(TEXT("context_index"), ContextIndex);
+    Params->TryGetStringField(TEXT("enum_path"), EnumPath);
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    if (!Table->ColumnsStructs.IsValidIndex(ColumnIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("column_index %d out of range [0..%d)"), ColumnIndex, Table->ColumnsStructs.Num()));
+    }
+
+    UEnum* EnumToSet = nullptr;
+    if (!EnumPath.IsEmpty())
+    {
+        EnumToSet = LoadObject<UEnum>(nullptr, *EnumPath);
+        if (!EnumToSet) EnumToSet = FindFirstObject<UEnum>(*EnumPath, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+        if (!EnumToSet)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("enum_path not found: %s"), *EnumPath));
+        }
+    }
+
+    FString ApplyErr;
+    if (!ApplyBindingToColumn(Table->ColumnsStructs[ColumnIndex], PathAsText, ContextIndex, EnumToSet, ApplyErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(ApplyErr);
+    }
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("column_index"), ColumnIndex);
+    Result->SetStringField(TEXT("binding_path_as_text"), PathAsText);
+    Result->SetNumberField(TEXT("context_index"), ContextIndex);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableRowResult(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ResultAssetPath;
+    int32 RowIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("row_index"), RowIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'row_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("result_asset_path"), ResultAssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'result_asset_path' parameter"));
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+#if WITH_EDITORONLY_DATA
+    if (!Table->ResultsStructs.IsValidIndex(RowIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("row_index %d out of range [0..%d)"), RowIndex, Table->ResultsStructs.Num()));
+    }
+
+    UObject* Asset = LoadObject<UObject>(nullptr, *ResultAssetPath);
+    if (!Asset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Result asset not found: %s"), *ResultAssetPath));
+    }
+
+    FAssetChooser NewResult;
+    NewResult.Asset = Asset;
+    Table->ResultsStructs[RowIndex].InitializeAs(FAssetChooser::StaticStruct(), reinterpret_cast<const uint8*>(&NewResult));
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("row_index"), RowIndex);
+    Result->SetStringField(TEXT("result_asset_path"), Asset->GetPathName());
+    return Result;
+#else
+    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("ResultsStructs is editor-only; cannot edit rows in non-editor build"));
+#endif
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableRowColumnValue(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, Value;
+    int32 RowIndex = INDEX_NONE;
+    int32 ColumnIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("row_index"), RowIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'row_index' parameter"));
+    if (!Params->TryGetNumberField(TEXT("column_index"), ColumnIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'column_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("value"), Value))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter (T3D text form — see set_ik_retargeter_op_field docstring)"));
+
+    TSharedPtr<FJsonObject> Err;
+    UChooserTable* Table = LoadChooserTableOrError(AssetPath, Err);
+    if (!Table) return Err;
+
+    if (!Table->ColumnsStructs.IsValidIndex(ColumnIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("column_index %d out of range [0..%d)"), ColumnIndex, Table->ColumnsStructs.Num()));
+    }
+
+    FInstancedStruct& ColInst = Table->ColumnsStructs[ColumnIndex];
+    const UScriptStruct* ColStruct = ColInst.GetScriptStruct();
+    if (!ColStruct || !ColInst.IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Column not initialized"));
+    }
+
+#if WITH_EDITOR
+    const FName RowValsName = ColInst.GetMutable<FChooserColumnBase>().RowValuesPropertyName();
+    FArrayProperty* RowValsProp = FindFProperty<FArrayProperty>(ColStruct, RowValsName);
+#else
+    FArrayProperty* RowValsProp = FindFProperty<FArrayProperty>(ColStruct, TEXT("RowValues"));
+#endif
+    if (!RowValsProp || !RowValsProp->Inner)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Column '%s' has no RowValues array property"), *ColStruct->GetName()));
+    }
+
+    FScriptArrayHelper ArrayHelper(RowValsProp, RowValsProp->ContainerPtrToValuePtr<void>(ColInst.GetMutableMemory()));
+    if (!ArrayHelper.IsValidIndex(RowIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("row_index %d out of range for column RowValues [0..%d)"), RowIndex, ArrayHelper.Num()));
+    }
+
+    void* ElemPtr = ArrayHelper.GetRawPtr(RowIndex);
+    const TCHAR* ImportResult = RowValsProp->Inner->ImportText_Direct(*Value, ElemPtr, /*OwnerObject=*/nullptr, PPF_None, GLog);
+    if (!ImportResult)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("ImportText_Direct failed for column %d row %d (value='%s', element type=%s)"),
+                ColumnIndex, RowIndex, *Value, *RowValsProp->Inner->GetCPPType()));
+    }
+
+#if WITH_EDITOR
+    PostWriteChooserCompile(Table);
+#endif
+    Table->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
+    Result->SetNumberField(TEXT("row_index"), RowIndex);
+    Result->SetNumberField(TEXT("column_index"), ColumnIndex);
     return Result;
 }
