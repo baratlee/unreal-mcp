@@ -242,6 +242,26 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     {
         return HandleSetAnimationProperties(Params);
     }
+    if (CommandType == TEXT("add_animation_notify"))
+    {
+        return HandleAddAnimationNotify(Params);
+    }
+    if (CommandType == TEXT("remove_animation_notify"))
+    {
+        return HandleRemoveAnimationNotify(Params);
+    }
+    if (CommandType == TEXT("set_animation_notify"))
+    {
+        return HandleSetAnimationNotify(Params);
+    }
+    if (CommandType == TEXT("get_animation_notify_details"))
+    {
+        return HandleGetAnimationNotifyDetails(Params);
+    }
+    if (CommandType == TEXT("set_animation_notify_property"))
+    {
+        return HandleSetAnimationNotifyProperty(Params);
+    }
     if (CommandType == TEXT("create_ik_rig"))
     {
         return HandleCreateIKRig(Params);
@@ -5657,5 +5677,495 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableRowCol
     Result->SetStringField(TEXT("asset_path"), Table->GetPathName());
     Result->SetNumberField(TEXT("row_index"), RowIndex);
     Result->SetNumberField(TEXT("column_index"), ColumnIndex);
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// SerializeNotifyProperties – helper for get_animation_notify_details
+// ---------------------------------------------------------------------------
+void FUnrealMCPAnimationCommands::SerializeNotifyProperties(
+    UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray)
+{
+    if (!Object) return;
+
+    for (TFieldIterator<FProperty> PropIt(Object->GetClass()); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        if (!Prop) continue;
+        if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+        if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient)) continue;
+
+        TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+        PropObj->SetStringField(TEXT("name"), Prop->GetName());
+        PropObj->SetStringField(TEXT("category"), Prop->GetMetaData(TEXT("Category")));
+
+        void* ValueAddr = Prop->ContainerPtrToValuePtr<void>(Object);
+
+        FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop);
+        if (ObjProp)
+        {
+            UObject* SubObj = ObjProp->GetObjectPropertyValue(ValueAddr);
+            PropObj->SetStringField(TEXT("type"), TEXT("object"));
+            PropObj->SetStringField(TEXT("value"), SubObj ? SubObj->GetPathName() : TEXT("None"));
+            if (SubObj)
+            {
+                PropObj->SetStringField(TEXT("object_class"), SubObj->GetClass()->GetName());
+            }
+            OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
+            continue;
+        }
+
+        FString ValueStr;
+        Prop->ExportTextItem_Direct(ValueStr, ValueAddr, nullptr, nullptr, PPF_None);
+
+        FString TypeStr;
+        if (CastField<FBoolProperty>(Prop)) TypeStr = TEXT("bool");
+        else if (CastField<FIntProperty>(Prop)) TypeStr = TEXT("int");
+        else if (CastField<FFloatProperty>(Prop)) TypeStr = TEXT("float");
+        else if (CastField<FDoubleProperty>(Prop)) TypeStr = TEXT("double");
+        else if (CastField<FStrProperty>(Prop)) TypeStr = TEXT("string");
+        else if (CastField<FNameProperty>(Prop)) TypeStr = TEXT("FName");
+        else if (CastField<FEnumProperty>(Prop) || CastField<FByteProperty>(Prop)) TypeStr = TEXT("enum");
+        else if (CastField<FStructProperty>(Prop)) TypeStr = CastField<FStructProperty>(Prop)->Struct->GetName();
+        else if (CastField<FArrayProperty>(Prop)) TypeStr = TEXT("TArray");
+        else TypeStr = Prop->GetCPPType();
+
+        PropObj->SetStringField(TEXT("type"), TypeStr);
+        PropObj->SetStringField(TEXT("value"), ValueStr);
+        OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HandleAddAnimationNotify
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddAnimationNotify(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    FString NotifyClassPath;
+    if (!Params->TryGetStringField(TEXT("notify_class"), NotifyClassPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'notify_class' parameter"));
+    }
+
+    double TriggerTime = 0.0;
+    if (!Params->TryGetNumberField(TEXT("trigger_time"), TriggerTime))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'trigger_time' parameter"));
+    }
+
+    UAnimSequenceBase* AnimBase = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath);
+    if (!AnimBase)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
+    }
+
+    UClass* NotifyUClass = StaticLoadClass(UObject::StaticClass(), nullptr, *NotifyClassPath);
+    if (!NotifyUClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Notify class not found: %s"), *NotifyClassPath));
+    }
+
+    bool bIsState = NotifyUClass->IsChildOf(UAnimNotifyState::StaticClass());
+    bool bIsNotify = NotifyUClass->IsChildOf(UAnimNotify::StaticClass());
+    if (!bIsState && !bIsNotify)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Class is neither UAnimNotify nor UAnimNotifyState: %s"), *NotifyClassPath));
+    }
+
+    double Duration = 0.0;
+    Params->TryGetNumberField(TEXT("duration"), Duration);
+
+    int32 TrackIndex = 0;
+    if (Params->HasField(TEXT("track_index")))
+    {
+        TrackIndex = static_cast<int32>(Params->GetNumberField(TEXT("track_index")));
+    }
+
+    FString NotifyName;
+    if (!Params->TryGetStringField(TEXT("notify_name"), NotifyName))
+    {
+        NotifyName = NotifyUClass->GetName();
+        NotifyName.RemoveFromStart(TEXT("AnimNotifyState_"));
+        NotifyName.RemoveFromStart(TEXT("AnimNotify_"));
+    }
+
+    AnimBase->Modify();
+
+    FAnimNotifyEvent& NewEvent = AnimBase->Notifies.AddDefaulted_GetRef();
+    NewEvent.NotifyName = FName(*NotifyName);
+    NewEvent.TrackIndex = TrackIndex;
+
+    if (bIsState)
+    {
+        NewEvent.NotifyStateClass = NewObject<UAnimNotifyState>(AnimBase, NotifyUClass, NAME_None, RF_Transactional);
+        NewEvent.Duration = static_cast<float>(Duration);
+    }
+    else
+    {
+        NewEvent.Notify = NewObject<UAnimNotify>(AnimBase, NotifyUClass, NAME_None, RF_Transactional);
+    }
+
+    NewEvent.Link(AnimBase, static_cast<float>(TriggerTime));
+    NewEvent.TriggerTimeOffset = GetTriggerTimeOffsetForType(AnimBase->CalculateOffsetForNotify(static_cast<float>(TriggerTime)));
+
+    if (bIsState && Duration > 0.0)
+    {
+        NewEvent.EndLink.Link(AnimBase, static_cast<float>(TriggerTime + Duration));
+    }
+
+    AnimBase->PostEditChange();
+    AnimBase->MarkPackageDirty();
+
+    int32 NewIndex = AnimBase->Notifies.Num() - 1;
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+    Result->SetNumberField(TEXT("notify_index"), NewIndex);
+    Result->SetStringField(TEXT("notify_name"), NotifyName);
+    Result->SetStringField(TEXT("notify_class"), NotifyUClass->GetPathName());
+    Result->SetNumberField(TEXT("trigger_time"), NewEvent.GetTriggerTime());
+    Result->SetNumberField(TEXT("duration"), NewEvent.GetDuration());
+    Result->SetNumberField(TEXT("track_index"), NewEvent.TrackIndex);
+    Result->SetBoolField(TEXT("is_state"), bIsState);
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleRemoveAnimationNotify
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveAnimationNotify(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double NotifyIndexD = -1;
+    if (!Params->TryGetNumberField(TEXT("notify_index"), NotifyIndexD))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'notify_index' parameter"));
+    }
+    int32 NotifyIndex = static_cast<int32>(NotifyIndexD);
+
+    UAnimSequenceBase* AnimBase = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath);
+    if (!AnimBase)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
+    }
+
+    if (!AnimBase->Notifies.IsValidIndex(NotifyIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid notify_index %d (valid 0..%d)"), NotifyIndex, AnimBase->Notifies.Num() - 1));
+    }
+
+    FString RemovedName = AnimBase->Notifies[NotifyIndex].NotifyName.ToString();
+
+    AnimBase->Modify();
+    AnimBase->Notifies.RemoveAt(NotifyIndex);
+    AnimBase->PostEditChange();
+    AnimBase->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+    Result->SetStringField(TEXT("removed_notify"), RemovedName);
+    Result->SetNumberField(TEXT("remaining_count"), AnimBase->Notifies.Num());
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetAnimationNotify – modify timing / track / name of existing notify
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationNotify(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double NotifyIndexD = -1;
+    if (!Params->TryGetNumberField(TEXT("notify_index"), NotifyIndexD))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'notify_index' parameter"));
+    }
+    int32 NotifyIndex = static_cast<int32>(NotifyIndexD);
+
+    UAnimSequenceBase* AnimBase = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath);
+    if (!AnimBase)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
+    }
+
+    if (!AnimBase->Notifies.IsValidIndex(NotifyIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid notify_index %d (valid 0..%d)"), NotifyIndex, AnimBase->Notifies.Num() - 1));
+    }
+
+    AnimBase->Modify();
+    FAnimNotifyEvent& Notify = AnimBase->Notifies[NotifyIndex];
+    TArray<FString> ModifiedFields;
+
+    if (Params->HasField(TEXT("trigger_time")))
+    {
+        float NewTime = static_cast<float>(Params->GetNumberField(TEXT("trigger_time")));
+        Notify.Link(AnimBase, NewTime);
+        Notify.TriggerTimeOffset = GetTriggerTimeOffsetForType(AnimBase->CalculateOffsetForNotify(NewTime));
+        ModifiedFields.Add(TEXT("trigger_time"));
+    }
+
+    if (Params->HasField(TEXT("duration")))
+    {
+        float NewDuration = static_cast<float>(Params->GetNumberField(TEXT("duration")));
+        Notify.SetDuration(NewDuration);
+        if (Notify.NotifyStateClass)
+        {
+            Notify.EndLink.Link(AnimBase, Notify.GetTriggerTime() + NewDuration);
+        }
+        ModifiedFields.Add(TEXT("duration"));
+    }
+
+    if (Params->HasField(TEXT("track_index")))
+    {
+        Notify.TrackIndex = static_cast<int32>(Params->GetNumberField(TEXT("track_index")));
+        ModifiedFields.Add(TEXT("track_index"));
+    }
+
+    FString NewName;
+    if (Params->TryGetStringField(TEXT("notify_name"), NewName))
+    {
+        Notify.NotifyName = FName(*NewName);
+        ModifiedFields.Add(TEXT("notify_name"));
+    }
+
+    if (ModifiedFields.Num() == 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No fields to modify (provide trigger_time, duration, track_index, or notify_name)"));
+    }
+
+    AnimBase->PostEditChange();
+    AnimBase->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+    Result->SetNumberField(TEXT("notify_index"), NotifyIndex);
+
+    TArray<TSharedPtr<FJsonValue>> FieldsJson;
+    for (const FString& F : ModifiedFields)
+    {
+        FieldsJson.Add(MakeShared<FJsonValueString>(F));
+    }
+    Result->SetArrayField(TEXT("modified_fields"), FieldsJson);
+
+    Result->SetStringField(TEXT("notify_name"), Notify.NotifyName.ToString());
+    Result->SetNumberField(TEXT("trigger_time"), Notify.GetTriggerTime());
+    Result->SetNumberField(TEXT("duration"), Notify.GetDuration());
+    Result->SetNumberField(TEXT("track_index"), Notify.TrackIndex);
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetAnimationNotifyDetails – read Detail panel properties of a notify
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationNotifyDetails(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double NotifyIndexD = -1;
+    if (!Params->TryGetNumberField(TEXT("notify_index"), NotifyIndexD))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'notify_index' parameter"));
+    }
+    int32 NotifyIndex = static_cast<int32>(NotifyIndexD);
+
+    UAnimSequenceBase* AnimBase = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath);
+    if (!AnimBase)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
+    }
+
+    if (!AnimBase->Notifies.IsValidIndex(NotifyIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid notify_index %d (valid 0..%d)"), NotifyIndex, AnimBase->Notifies.Num() - 1));
+    }
+
+    const FAnimNotifyEvent& Notify = AnimBase->Notifies[NotifyIndex];
+
+    UObject* NotifyObj = nullptr;
+    FString NotifyClassName;
+    bool bIsState = false;
+
+    if (Notify.NotifyStateClass)
+    {
+        NotifyObj = Notify.NotifyStateClass;
+        NotifyClassName = Notify.NotifyStateClass->GetClass()->GetPathName();
+        bIsState = true;
+    }
+    else if (Notify.Notify)
+    {
+        NotifyObj = Notify.Notify;
+        NotifyClassName = Notify.Notify->GetClass()->GetPathName();
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+    Result->SetNumberField(TEXT("notify_index"), NotifyIndex);
+    Result->SetStringField(TEXT("notify_name"), Notify.NotifyName.ToString());
+    Result->SetStringField(TEXT("notify_class"), NotifyClassName);
+    Result->SetBoolField(TEXT("is_state"), bIsState);
+    Result->SetNumberField(TEXT("trigger_time"), Notify.GetTriggerTime());
+    Result->SetNumberField(TEXT("duration"), Notify.GetDuration());
+    Result->SetNumberField(TEXT("track_index"), Notify.TrackIndex);
+    Result->SetBoolField(TEXT("is_branching_point"), Notify.IsBranchingPoint());
+    Result->SetNumberField(TEXT("notify_trigger_chance"), Notify.NotifyTriggerChance);
+    Result->SetBoolField(TEXT("b_trigger_on_dedicated_server"), Notify.bTriggerOnDedicatedServer);
+    Result->SetBoolField(TEXT("b_trigger_on_follower"), Notify.bTriggerOnFollower);
+
+    if (NotifyObj)
+    {
+        TArray<TSharedPtr<FJsonValue>> PropsArray;
+        SerializeNotifyProperties(NotifyObj, PropsArray);
+        Result->SetArrayField(TEXT("properties"), PropsArray);
+    }
+    else
+    {
+        Result->SetArrayField(TEXT("properties"), TArray<TSharedPtr<FJsonValue>>());
+    }
+
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetAnimationNotifyProperty – write a Detail-panel property on a notify
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationNotifyProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double NotifyIndexD = -1;
+    if (!Params->TryGetNumberField(TEXT("notify_index"), NotifyIndexD))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'notify_index' parameter"));
+    }
+    int32 NotifyIndex = static_cast<int32>(NotifyIndexD);
+
+    FString PropertyName;
+    if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+    }
+
+    if (!Params->HasField(TEXT("property_value")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+    }
+
+    UAnimSequenceBase* AnimBase = LoadObject<UAnimSequenceBase>(nullptr, *AssetPath);
+    if (!AnimBase)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
+    }
+
+    if (!AnimBase->Notifies.IsValidIndex(NotifyIndex))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid notify_index %d (valid 0..%d)"), NotifyIndex, AnimBase->Notifies.Num() - 1));
+    }
+
+    FAnimNotifyEvent& Notify = AnimBase->Notifies[NotifyIndex];
+    UObject* NotifyObj = Notify.NotifyStateClass ? static_cast<UObject*>(Notify.NotifyStateClass) : static_cast<UObject*>(Notify.Notify);
+    if (!NotifyObj)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Notify has no UAnimNotify/UAnimNotifyState object"));
+    }
+
+    TSharedPtr<FJsonValue> JsonValue = Params->Values.FindRef(TEXT("property_value"));
+
+    FString ErrorMessage;
+    if (FUnrealMCPCommonUtils::SetObjectProperty(NotifyObj, PropertyName, JsonValue, ErrorMessage))
+    {
+        AnimBase->Modify();
+        AnimBase->PostEditChange();
+        AnimBase->MarkPackageDirty();
+
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+        Result->SetNumberField(TEXT("notify_index"), NotifyIndex);
+        Result->SetStringField(TEXT("property_name"), PropertyName);
+        return Result;
+    }
+
+    FProperty* Prop = NotifyObj->GetClass()->FindPropertyByName(*PropertyName);
+    if (!Prop)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Property not found on notify object: %s"), *PropertyName));
+    }
+
+    FString ValueStr;
+    if (JsonValue->Type == EJson::String)
+    {
+        ValueStr = JsonValue->AsString();
+    }
+    else if (JsonValue->Type == EJson::Number)
+    {
+        ValueStr = FString::SanitizeFloat(JsonValue->AsNumber());
+    }
+    else if (JsonValue->Type == EJson::Boolean)
+    {
+        ValueStr = JsonValue->AsBool() ? TEXT("True") : TEXT("False");
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("ImportText fallback only supports string/number/bool property_value"));
+    }
+
+    void* PropAddr = Prop->ContainerPtrToValuePtr<void>(NotifyObj);
+    const TCHAR* ImportResult = Prop->ImportText_Direct(*ValueStr, PropAddr, NotifyObj, PPF_None);
+    if (!ImportResult)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to set property '%s' via ImportText with value: %s"), *PropertyName, *ValueStr));
+    }
+
+    AnimBase->Modify();
+    AnimBase->PostEditChange();
+    AnimBase->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AnimBase->GetPathName());
+    Result->SetNumberField(TEXT("notify_index"), NotifyIndex);
+    Result->SetStringField(TEXT("property_name"), PropertyName);
+    Result->SetStringField(TEXT("import_text_value"), ValueStr);
     return Result;
 }

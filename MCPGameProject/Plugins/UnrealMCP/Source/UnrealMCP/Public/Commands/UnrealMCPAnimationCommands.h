@@ -74,6 +74,16 @@ private:
     // Animation write tools
     TSharedPtr<FJsonObject> HandleSetAnimationProperties(const TSharedPtr<FJsonObject>& Params);
 
+    // Animation notify write tools
+    TSharedPtr<FJsonObject> HandleAddAnimationNotify(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveAnimationNotify(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetAnimationNotify(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetAnimationNotifyDetails(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetAnimationNotifyProperty(const TSharedPtr<FJsonObject>& Params);
+
+    // Helper: serialize all editable properties of a UObject to JSON
+    void SerializeNotifyProperties(UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray);
+
     // IKRig write tools (Batch C.1)
     TSharedPtr<FJsonObject> HandleCreateIKRig(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetIKRigRetargetRoot(const TSharedPtr<FJsonObject>& Params);

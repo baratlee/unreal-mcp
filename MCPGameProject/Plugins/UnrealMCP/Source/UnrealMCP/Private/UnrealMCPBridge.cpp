@@ -386,7 +386,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("remove_chooser_table_column") ||
                      CommandType == TEXT("set_chooser_table_column_binding") ||
                      CommandType == TEXT("set_chooser_table_row_result") ||
-                     CommandType == TEXT("set_chooser_table_row_column_value"))
+                     CommandType == TEXT("set_chooser_table_row_column_value") ||
+                     CommandType == TEXT("add_animation_notify") ||
+                     CommandType == TEXT("remove_animation_notify") ||
+                     CommandType == TEXT("set_animation_notify") ||
+                     CommandType == TEXT("get_animation_notify_details") ||
+                     CommandType == TEXT("set_animation_notify_property"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

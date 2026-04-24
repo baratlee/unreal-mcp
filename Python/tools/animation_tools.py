@@ -2388,4 +2388,225 @@ def register_animation_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": f"Error setting retarget pose: {e}"}
 
+    # -----------------------------------------------------------------------
+    # Animation Notify write tools
+    # -----------------------------------------------------------------------
+
+    @mcp.tool()
+    def add_animation_notify(
+        ctx: Context,
+        asset_path: str,
+        notify_class: str,
+        trigger_time: float,
+        duration: float = 0.0,
+        track_index: int = 0,
+        notify_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add an AnimNotify or AnimNotifyState to an AnimSequence / AnimMontage.
+
+        Args:
+            asset_path: Full asset path, e.g. "/Game/Animations/Montage_Attack.Montage_Attack"
+            notify_class: Class path of the notify, e.g. "/Script/Engine.AnimNotify_PlaySound"
+            trigger_time: Trigger time in seconds
+            duration: Duration in seconds (only meaningful for AnimNotifyState)
+            track_index: Notify track row index (default 0)
+            notify_name: Optional display name; auto-derived from class if omitted
+
+        Returns:
+            Dict with success, notify_index, notify_name, trigger_time, duration, etc.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params: Dict[str, Any] = {
+                "asset_path": asset_path,
+                "notify_class": notify_class,
+                "trigger_time": trigger_time,
+                "duration": duration,
+                "track_index": track_index,
+            }
+            if notify_name is not None:
+                params["notify_name"] = notify_name
+
+            response = unreal.send_command("add_animation_notify", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error adding animation notify: {e}"}
+
+    @mcp.tool()
+    def remove_animation_notify(
+        ctx: Context,
+        asset_path: str,
+        notify_index: int,
+    ) -> Dict[str, Any]:
+        """Remove an animation notify by index.
+
+        Args:
+            asset_path: Full asset path of the AnimSequence or AnimMontage
+            notify_index: Zero-based index into the notifies array (from get_animation_notifies)
+
+        Returns:
+            Dict with success, removed_notify name, remaining_count.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("remove_animation_notify", {
+                "asset_path": asset_path,
+                "notify_index": notify_index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error removing animation notify: {e}"}
+
+    @mcp.tool()
+    def set_animation_notify(
+        ctx: Context,
+        asset_path: str,
+        notify_index: int,
+        trigger_time: Optional[float] = None,
+        duration: Optional[float] = None,
+        track_index: Optional[int] = None,
+        notify_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Modify the timing, track, or name of an existing animation notify.
+
+        Args:
+            asset_path: Full asset path of the AnimSequence or AnimMontage
+            notify_index: Zero-based index of the notify to modify
+            trigger_time: New trigger time in seconds (optional)
+            duration: New duration in seconds, for state notifies (optional)
+            track_index: New track row index (optional)
+            notify_name: New display name (optional)
+
+        Returns:
+            Dict with success, modified_fields list, and updated values.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params: Dict[str, Any] = {
+                "asset_path": asset_path,
+                "notify_index": notify_index,
+            }
+            if trigger_time is not None:
+                params["trigger_time"] = trigger_time
+            if duration is not None:
+                params["duration"] = duration
+            if track_index is not None:
+                params["track_index"] = track_index
+            if notify_name is not None:
+                params["notify_name"] = notify_name
+
+            response = unreal.send_command("set_animation_notify", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting animation notify: {e}"}
+
+    @mcp.tool()
+    def get_animation_notify_details(
+        ctx: Context,
+        asset_path: str,
+        notify_index: int,
+    ) -> Dict[str, Any]:
+        """Get the Detail-panel properties of a specific animation notify.
+
+        Returns timing info plus all editable properties of the UAnimNotify or
+        UAnimNotifyState object (the same fields shown in the editor Details panel).
+
+        Args:
+            asset_path: Full asset path of the AnimSequence or AnimMontage
+            notify_index: Zero-based index of the notify
+
+        Returns:
+            Dict with basic notify info and a 'properties' array.  Each property
+            entry has: name, type, value, category.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_animation_notify_details", {
+                "asset_path": asset_path,
+                "notify_index": notify_index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error getting notify details: {e}"}
+
+    @mcp.tool()
+    def set_animation_notify_property(
+        ctx: Context,
+        asset_path: str,
+        notify_index: int,
+        property_name: str,
+        property_value: Union[str, int, float, bool],
+    ) -> Dict[str, Any]:
+        """Set a Detail-panel property on an animation notify object.
+
+        Supports basic types (bool, int, float, string, enum) directly and
+        complex types (struct, object ref) via UE ImportText format.
+
+        Args:
+            asset_path: Full asset path of the AnimSequence or AnimMontage
+            notify_index: Zero-based index of the notify
+            property_name: Name of the property to set (e.g. "VolumeMultiplier")
+            property_value: New value.  For object references pass the asset path
+                string; for structs use UE text format (e.g. "(X=0,Y=0,Z=100)")
+
+        Returns:
+            Dict with success and the property that was set.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("set_animation_notify_property", {
+                "asset_path": asset_path,
+                "notify_index": notify_index,
+                "property_name": property_name,
+                "property_value": property_value,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting notify property: {e}"}
+
     logger.info("Animation tools registered successfully")
