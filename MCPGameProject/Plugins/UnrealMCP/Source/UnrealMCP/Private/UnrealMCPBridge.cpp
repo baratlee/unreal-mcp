@@ -353,6 +353,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_ik_retargeter_info") ||
                      CommandType == TEXT("get_input_action_info") ||
                      CommandType == TEXT("get_input_mapping_context_info") ||
+                     CommandType == TEXT("create_input_action") ||
+                     CommandType == TEXT("set_input_action_property") ||
+                     CommandType == TEXT("create_input_mapping_context") ||
+                     CommandType == TEXT("add_imc_mapping") ||
+                     CommandType == TEXT("remove_imc_mapping") ||
+                     CommandType == TEXT("add_imc_mapping_modifier") ||
+                     CommandType == TEXT("add_imc_mapping_trigger") ||
                      CommandType == TEXT("get_pose_search_database_info") ||
                      CommandType == TEXT("get_pose_search_schema_info") ||
                      CommandType == TEXT("set_pose_search_database_schema") ||

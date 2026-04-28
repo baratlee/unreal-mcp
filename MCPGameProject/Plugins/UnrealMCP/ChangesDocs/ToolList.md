@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 92 tools total, organized by category. (注：ToolList 落后于源码；2026-04-21 新增的 4 个 PoseSearch 写工具 set_pose_search_database_cost_biases / set_pose_search_database_animation_flags / set_pose_search_schema_channel_weight / set_pose_search_schema_trajectory_sample 暂未补入表格，实际总数为 96。)
+> 103 tools total, organized by category.
 
 ---
 
@@ -131,7 +131,7 @@
 | `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图 |
 | `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等） |
 
-## Pose Search Tools (8)
+## Pose Search Tools (12)
 
 | Tool | Description |
 |---|---|
@@ -140,13 +140,24 @@
 | `set_pose_search_database_schema` | 设置 PSD 的 Schema 引用 |
 | `add_pose_search_database_animation` | 添加动画条目（路径 + enabled + sampling range） |
 | `remove_pose_search_database_animation` | 按 index 移除动画条目 |
+| `set_pose_search_database_cost_biases` | 设置 PSD 的 cost bias 参数 |
+| `set_pose_search_database_animation_flags` | 设置 PSD 动画条目的 enabled / mirror 等标志位 |
 | `set_pose_search_schema_settings` | 设置 PSS 的采样率、骨骼引用 |
 | `add_pose_search_schema_channel` | 添加通道（Trajectory/Pose/Position/Velocity/Heading/Curve） |
 | `remove_pose_search_schema_channel` | 按 index 移除通道 |
+| `set_pose_search_schema_channel_weight` | 设置指定通道的 Weight 值 |
+| `set_pose_search_schema_trajectory_sample` | 设置 Trajectory 通道的采样点配置 |
 
-## Enhanced Input Tools (2)
+## Enhanced Input Tools (9)
 
 | Tool | Description |
 |---|---|
 | `get_input_action_info` | 读取 InputAction（IA）资产：ValueType、Triggers、Modifiers、标志位 |
 | `get_input_mapping_context_info` | 读取 InputMappingContext（IMC）资产：所有按键映射及其 Action/Triggers/Modifiers |
+| `create_input_action` | 创建 IA 资产（指定 ValueType / description / consume_input 等） |
+| `set_input_action_property` | 修改已有 IA 的属性（value_type / description / consume_input / trigger_when_paused / reserve_all_mappings） |
+| `create_input_mapping_context` | 创建 IMC 资产（可选 description） |
+| `add_imc_mapping` | 向 IMC 添加 Action + Key 映射，返回 mapping_index |
+| `remove_imc_mapping` | 按 index 或 action+key 移除映射 |
+| `add_imc_mapping_modifier` | 给映射追加 Modifier（DeadZone / Negate / SwizzleAxis / Scalar / FOVScaling / ResponseCurveExponential，含全部子属性） |
+| `add_imc_mapping_trigger` | 给映射追加 Trigger（Down / Pressed / Released / Hold / HoldAndRelease / Tap / Pulse / ChordAction，含全部子属性） |

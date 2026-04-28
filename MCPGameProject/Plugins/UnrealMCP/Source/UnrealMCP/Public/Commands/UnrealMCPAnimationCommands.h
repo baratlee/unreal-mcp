@@ -40,6 +40,15 @@ private:
     TSharedPtr<FJsonObject> HandleGetInputActionInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetInputMappingContextInfo(const TSharedPtr<FJsonObject>& Params);
 
+    // Enhanced Input write tools
+    TSharedPtr<FJsonObject> HandleCreateInputAction(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetInputActionProperty(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleCreateInputMappingContext(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIMCMapping(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveIMCMapping(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIMCMappingModifier(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddIMCMappingTrigger(const TSharedPtr<FJsonObject>& Params);
+
     // Pose Search asset readers
     TSharedPtr<FJsonObject> HandleGetPoseSearchDatabaseInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetPoseSearchSchemaInfo(const TSharedPtr<FJsonObject>& Params);

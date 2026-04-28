@@ -182,6 +182,35 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     {
         return HandleGetInputMappingContextInfo(Params);
     }
+    // Enhanced Input write commands
+    if (CommandType == TEXT("create_input_action"))
+    {
+        return HandleCreateInputAction(Params);
+    }
+    if (CommandType == TEXT("set_input_action_property"))
+    {
+        return HandleSetInputActionProperty(Params);
+    }
+    if (CommandType == TEXT("create_input_mapping_context"))
+    {
+        return HandleCreateInputMappingContext(Params);
+    }
+    if (CommandType == TEXT("add_imc_mapping"))
+    {
+        return HandleAddIMCMapping(Params);
+    }
+    if (CommandType == TEXT("remove_imc_mapping"))
+    {
+        return HandleRemoveIMCMapping(Params);
+    }
+    if (CommandType == TEXT("add_imc_mapping_modifier"))
+    {
+        return HandleAddIMCMappingModifier(Params);
+    }
+    if (CommandType == TEXT("add_imc_mapping_trigger"))
+    {
+        return HandleAddIMCMappingTrigger(Params);
+    }
     if (CommandType == TEXT("get_pose_search_database_info"))
     {
         return HandleGetPoseSearchDatabaseInfo(Params);
@@ -6167,5 +6196,574 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationNotifyPro
     Result->SetNumberField(TEXT("notify_index"), NotifyIndex);
     Result->SetStringField(TEXT("property_name"), PropertyName);
     Result->SetStringField(TEXT("import_text_value"), ValueStr);
+    return Result;
+}
+
+// =============================================================================
+// Enhanced Input write tools
+// =============================================================================
+
+namespace
+{
+    EInputActionValueType StringToInputActionValueType(const FString& Str)
+    {
+        if (Str.Equals(TEXT("Axis1D"), ESearchCase::IgnoreCase)) return EInputActionValueType::Axis1D;
+        if (Str.Equals(TEXT("Axis2D"), ESearchCase::IgnoreCase)) return EInputActionValueType::Axis2D;
+        if (Str.Equals(TEXT("Axis3D"), ESearchCase::IgnoreCase)) return EInputActionValueType::Axis3D;
+        return EInputActionValueType::Boolean;
+    }
+
+    UInputModifier* CreateModifierFromJson(UObject* Outer, const FString& ClassName, const TSharedPtr<FJsonObject>& Params)
+    {
+        if (ClassName.Equals(TEXT("DeadZone"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierDeadZone>(Outer);
+            double Val;
+            if (Params->TryGetNumberField(TEXT("lower_threshold"), Val)) Mod->LowerThreshold = Val;
+            if (Params->TryGetNumberField(TEXT("upper_threshold"), Val)) Mod->UpperThreshold = Val;
+            FString TypeStr;
+            if (Params->TryGetStringField(TEXT("dead_zone_type"), TypeStr))
+            {
+                if (TypeStr.Equals(TEXT("Axial"), ESearchCase::IgnoreCase))
+                    Mod->Type = EDeadZoneType::Axial;
+                else
+                    Mod->Type = EDeadZoneType::Radial;
+            }
+            return Mod;
+        }
+        if (ClassName.Equals(TEXT("Negate"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierNegate>(Outer);
+            bool bVal;
+            if (Params->TryGetBoolField(TEXT("negate_x"), bVal)) Mod->bX = bVal;
+            if (Params->TryGetBoolField(TEXT("negate_y"), bVal)) Mod->bY = bVal;
+            if (Params->TryGetBoolField(TEXT("negate_z"), bVal)) Mod->bZ = bVal;
+            return Mod;
+        }
+        if (ClassName.Equals(TEXT("SwizzleAxis"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierSwizzleAxis>(Outer);
+            FString OrderStr;
+            if (Params->TryGetStringField(TEXT("order"), OrderStr))
+            {
+                if (OrderStr == TEXT("YXZ")) Mod->Order = EInputAxisSwizzle::YXZ;
+                else if (OrderStr == TEXT("ZYX")) Mod->Order = EInputAxisSwizzle::ZYX;
+                else if (OrderStr == TEXT("XZY")) Mod->Order = EInputAxisSwizzle::XZY;
+                else if (OrderStr == TEXT("YZX")) Mod->Order = EInputAxisSwizzle::YZX;
+                else if (OrderStr == TEXT("ZXY")) Mod->Order = EInputAxisSwizzle::ZXY;
+            }
+            return Mod;
+        }
+        if (ClassName.Equals(TEXT("Scalar"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierScalar>(Outer);
+            double V;
+            if (Params->TryGetNumberField(TEXT("scalar_x"), V)) Mod->Scalar.X = V;
+            if (Params->TryGetNumberField(TEXT("scalar_y"), V)) Mod->Scalar.Y = V;
+            if (Params->TryGetNumberField(TEXT("scalar_z"), V)) Mod->Scalar.Z = V;
+            return Mod;
+        }
+        if (ClassName.Equals(TEXT("FOVScaling"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierFOVScaling>(Outer);
+            double Val;
+            if (Params->TryGetNumberField(TEXT("fov_scale"), Val)) Mod->FOVScale = Val;
+            return Mod;
+        }
+        if (ClassName.Equals(TEXT("ResponseCurveExponential"), ESearchCase::IgnoreCase))
+        {
+            auto* Mod = NewObject<UInputModifierResponseCurveExponential>(Outer);
+            double V;
+            if (Params->TryGetNumberField(TEXT("curve_exponent_x"), V)) Mod->CurveExponent.X = V;
+            if (Params->TryGetNumberField(TEXT("curve_exponent_y"), V)) Mod->CurveExponent.Y = V;
+            if (Params->TryGetNumberField(TEXT("curve_exponent_z"), V)) Mod->CurveExponent.Z = V;
+            return Mod;
+        }
+        return nullptr;
+    }
+
+    UInputTrigger* CreateTriggerFromJson(UObject* Outer, const FString& ClassName, const TSharedPtr<FJsonObject>& Params)
+    {
+        double Val;
+        bool bVal;
+
+        if (ClassName.Equals(TEXT("Down"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerDown>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("Pressed"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerPressed>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("Released"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerReleased>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("Hold"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerHold>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            if (Params->TryGetNumberField(TEXT("hold_time_threshold"), Val)) T->HoldTimeThreshold = Val;
+            if (Params->TryGetBoolField(TEXT("is_one_shot"), bVal)) T->bIsOneShot = bVal;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("HoldAndRelease"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerHoldAndRelease>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            if (Params->TryGetNumberField(TEXT("hold_time_threshold"), Val)) T->HoldTimeThreshold = Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("Tap"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerTap>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            if (Params->TryGetNumberField(TEXT("tap_release_time_threshold"), Val)) T->TapReleaseTimeThreshold = Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("Pulse"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerPulse>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            if (Params->TryGetBoolField(TEXT("trigger_on_start"), bVal)) T->bTriggerOnStart = bVal;
+            if (Params->TryGetNumberField(TEXT("interval"), Val)) T->Interval = Val;
+            if (Params->TryGetNumberField(TEXT("trigger_limit"), Val)) T->TriggerLimit = (int32)Val;
+            return T;
+        }
+        if (ClassName.Equals(TEXT("ChordAction"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerChordAction>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            FString ChordPath;
+            if (Params->TryGetStringField(TEXT("chord_action_path"), ChordPath))
+            {
+                T->ChordAction = LoadObject<UInputAction>(nullptr, *ChordPath);
+            }
+            return T;
+        }
+        return nullptr;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// create_input_action
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateInputAction(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    FString PackageName, AssetName;
+    if (!SplitAssetPath(AssetPath, PackageName, AssetName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid asset_path: %s"), *AssetPath));
+    }
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UInputAction>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("InputAction already exists: %s"), *AssetPath));
+        }
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+    }
+    Package->FullyLoad();
+
+    UInputAction* NewIA = NewObject<UInputAction>(Package, UInputAction::StaticClass(), *AssetName, RF_Public | RF_Standalone);
+    if (!NewIA)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NewObject<UInputAction> returned null"));
+    }
+
+    FString ValueTypeStr;
+    if (Params->TryGetStringField(TEXT("value_type"), ValueTypeStr))
+    {
+        NewIA->ValueType = StringToInputActionValueType(ValueTypeStr);
+    }
+
+    FString Description;
+    if (Params->TryGetStringField(TEXT("description"), Description))
+    {
+        NewIA->ActionDescription = FText::FromString(Description);
+    }
+
+    bool bFlag;
+    if (Params->TryGetBoolField(TEXT("consume_input"), bFlag))       NewIA->bConsumeInput = bFlag;
+    if (Params->TryGetBoolField(TEXT("trigger_when_paused"), bFlag)) NewIA->bTriggerWhenPaused = bFlag;
+    if (Params->TryGetBoolField(TEXT("reserve_all_mappings"), bFlag)) NewIA->bReserveAllMappings = bFlag;
+
+    FAssetRegistryModule::AssetCreated(NewIA);
+    Package->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewIA->GetPathName());
+    Result->SetStringField(TEXT("value_type"), InputActionValueTypeToString(NewIA->ValueType));
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// set_input_action_property
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetInputActionProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UInputAction* IA = LoadObject<UInputAction>(nullptr, *AssetPath);
+    if (!IA)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputAction not found: %s"), *AssetPath));
+    }
+
+    TArray<FString> Changed;
+
+    FString ValueTypeStr;
+    if (Params->TryGetStringField(TEXT("value_type"), ValueTypeStr))
+    {
+        IA->ValueType = StringToInputActionValueType(ValueTypeStr);
+        Changed.Add(TEXT("value_type"));
+    }
+
+    FString Description;
+    if (Params->TryGetStringField(TEXT("description"), Description))
+    {
+        IA->ActionDescription = FText::FromString(Description);
+        Changed.Add(TEXT("description"));
+    }
+
+    bool bFlag;
+    if (Params->TryGetBoolField(TEXT("consume_input"), bFlag))
+    {
+        IA->bConsumeInput = bFlag;
+        Changed.Add(TEXT("consume_input"));
+    }
+    if (Params->TryGetBoolField(TEXT("trigger_when_paused"), bFlag))
+    {
+        IA->bTriggerWhenPaused = bFlag;
+        Changed.Add(TEXT("trigger_when_paused"));
+    }
+    if (Params->TryGetBoolField(TEXT("reserve_all_mappings"), bFlag))
+    {
+        IA->bReserveAllMappings = bFlag;
+        Changed.Add(TEXT("reserve_all_mappings"));
+    }
+
+    IA->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), IA->GetPathName());
+    TArray<TSharedPtr<FJsonValue>> ChangedArr;
+    for (const FString& C : Changed) ChangedArr.Add(MakeShared<FJsonValueString>(C));
+    Result->SetArrayField(TEXT("changed"), ChangedArr);
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// create_input_mapping_context
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateInputMappingContext(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    FString PackageName, AssetName;
+    if (!SplitAssetPath(AssetPath, PackageName, AssetName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid asset_path: %s"), *AssetPath));
+    }
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UInputMappingContext>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("InputMappingContext already exists: %s"), *AssetPath));
+        }
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+    }
+    Package->FullyLoad();
+
+    UInputMappingContext* NewIMC = NewObject<UInputMappingContext>(Package, UInputMappingContext::StaticClass(), *AssetName, RF_Public | RF_Standalone);
+    if (!NewIMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NewObject<UInputMappingContext> returned null"));
+    }
+
+    FString Description;
+    if (Params->TryGetStringField(TEXT("description"), Description))
+    {
+        NewIMC->ContextDescription = FText::FromString(Description);
+    }
+
+    FAssetRegistryModule::AssetCreated(NewIMC);
+    Package->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewIMC->GetPathName());
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// add_imc_mapping
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMapping(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    FString ActionPath;
+    if (!Params->TryGetStringField(TEXT("action_path"), ActionPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'action_path' parameter"));
+    }
+
+    FString KeyStr;
+    if (!Params->TryGetStringField(TEXT("key"), KeyStr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'key' parameter"));
+    }
+
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *AssetPath);
+    if (!IMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputMappingContext not found: %s"), *AssetPath));
+    }
+
+    UInputAction* IA = LoadObject<UInputAction>(nullptr, *ActionPath);
+    if (!IA)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputAction not found: %s"), *ActionPath));
+    }
+
+    FKey Key(*KeyStr);
+    if (!Key.IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid key: %s"), *KeyStr));
+    }
+
+    IMC->MapKey(IA, Key);
+    IMC->MarkPackageDirty();
+
+    int32 MappingIndex = IMC->GetMappings().Num() - 1;
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
+    Result->SetNumberField(TEXT("mapping_index"), MappingIndex);
+    Result->SetStringField(TEXT("action"), IA->GetPathName());
+    Result->SetStringField(TEXT("key"), KeyStr);
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// remove_imc_mapping
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveIMCMapping(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *AssetPath);
+    if (!IMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputMappingContext not found: %s"), *AssetPath));
+    }
+
+    double IndexVal;
+    if (Params->TryGetNumberField(TEXT("mapping_index"), IndexVal))
+    {
+        int32 MappingIndex = (int32)IndexVal;
+        const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+        if (MappingIndex < 0 || MappingIndex >= Mappings.Num())
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("mapping_index %d out of range (count=%d)"), MappingIndex, Mappings.Num()));
+        }
+        TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);
+        MutableMappings.RemoveAt(MappingIndex);
+    }
+    else
+    {
+        FString ActionPath;
+        if (!Params->TryGetStringField(TEXT("action_path"), ActionPath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Either 'mapping_index' or 'action_path'+'key' required"));
+        }
+        FString KeyStr;
+        if (!Params->TryGetStringField(TEXT("key"), KeyStr))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'key' when removing by action+key"));
+        }
+        UInputAction* IA = LoadObject<UInputAction>(nullptr, *ActionPath);
+        if (!IA)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("InputAction not found: %s"), *ActionPath));
+        }
+        IMC->UnmapKey(IA, FKey(*KeyStr));
+    }
+
+    IMC->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
+    Result->SetNumberField(TEXT("remaining_mappings"), IMC->GetMappings().Num());
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// add_imc_mapping_modifier
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMappingModifier(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double IndexVal;
+    if (!Params->TryGetNumberField(TEXT("mapping_index"), IndexVal))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mapping_index' parameter"));
+    }
+    int32 MappingIndex = (int32)IndexVal;
+
+    FString ModifierClass;
+    if (!Params->TryGetStringField(TEXT("modifier_class"), ModifierClass))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'modifier_class' parameter"));
+    }
+
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *AssetPath);
+    if (!IMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputMappingContext not found: %s"), *AssetPath));
+    }
+
+    const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+    if (MappingIndex < 0 || MappingIndex >= Mappings.Num())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("mapping_index %d out of range (count=%d)"), MappingIndex, Mappings.Num()));
+    }
+
+    UInputModifier* NewMod = CreateModifierFromJson(IMC, ModifierClass, Params);
+    if (!NewMod)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Unknown modifier_class: %s. Supported: DeadZone, Negate, SwizzleAxis, Scalar, FOVScaling, ResponseCurveExponential"), *ModifierClass));
+    }
+
+    TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);
+    MutableMappings[MappingIndex].Modifiers.Add(NewMod);
+    IMC->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
+    Result->SetNumberField(TEXT("mapping_index"), MappingIndex);
+    Result->SetStringField(TEXT("modifier_class"), NewMod->GetClass()->GetName());
+    Result->SetNumberField(TEXT("modifier_count"), MutableMappings[MappingIndex].Modifiers.Num());
+    return Result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// add_imc_mapping_trigger
+// ─────────────────────────────────────────────────────────────
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMappingTrigger(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    double IndexVal;
+    if (!Params->TryGetNumberField(TEXT("mapping_index"), IndexVal))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mapping_index' parameter"));
+    }
+    int32 MappingIndex = (int32)IndexVal;
+
+    FString TriggerClass;
+    if (!Params->TryGetStringField(TEXT("trigger_class"), TriggerClass))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'trigger_class' parameter"));
+    }
+
+    UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *AssetPath);
+    if (!IMC)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("InputMappingContext not found: %s"), *AssetPath));
+    }
+
+    const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+    if (MappingIndex < 0 || MappingIndex >= Mappings.Num())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("mapping_index %d out of range (count=%d)"), MappingIndex, Mappings.Num()));
+    }
+
+    UInputTrigger* NewTrig = CreateTriggerFromJson(IMC, TriggerClass, Params);
+    if (!NewTrig)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Unknown trigger_class: %s. Supported: Down, Pressed, Released, Hold, HoldAndRelease, Tap, Pulse, ChordAction"), *TriggerClass));
+    }
+
+    TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);
+    MutableMappings[MappingIndex].Triggers.Add(NewTrig);
+    IMC->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
+    Result->SetNumberField(TEXT("mapping_index"), MappingIndex);
+    Result->SetStringField(TEXT("trigger_class"), NewTrig->GetClass()->GetName());
+    Result->SetNumberField(TEXT("trigger_count"), MutableMappings[MappingIndex].Triggers.Num());
     return Result;
 }
