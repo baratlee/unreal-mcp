@@ -71,7 +71,10 @@ public class UnrealMCP : ModuleRules
 					"IKRigEditor",         // For UIKRigController / UIKRetargeterController write APIs
 					"AnimGraph",           // For State Machine editor classes (UAnimStateNode, UAnimStateTransitionNode, etc.)
 					"EnhancedInput",       // For UInputAction / UInputMappingContext read-only inspection
-					"PoseSearch"           // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
+					"PoseSearch",          // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
+					"StateTreeModule",     // For UStateTree / UStateTreeSchema runtime types
+					"StateTreeEditorModule", // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
+					"GameplayTags"         // For FGameplayTag::StaticStruct used in StateTree property serialization
 				}
 			);
 		}

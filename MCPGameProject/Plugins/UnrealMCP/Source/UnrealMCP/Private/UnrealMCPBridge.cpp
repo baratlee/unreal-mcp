@@ -59,6 +59,7 @@
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "Commands/UnrealMCPAnimationCommands.h"
+#include "Commands/UnrealMCPStateTreeCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -105,6 +106,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     ProjectCommands = MakeShared<FUnrealMCPProjectCommands>();
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
     AnimationCommands = MakeShared<FUnrealMCPAnimationCommands>();
+    StateTreeCommands = MakeShared<FUnrealMCPStateTreeCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -115,6 +117,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     ProjectCommands.Reset();
     UMGCommands.Reset();
     AnimationCommands.Reset();
+    StateTreeCommands.Reset();
 }
 
 // Initialize subsystem
@@ -394,6 +397,20 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_animation_notify_property"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
+            }
+            // StateTree Commands
+            else if (CommandType == TEXT("create_state_tree") ||
+                     CommandType == TEXT("get_state_tree_info") ||
+                     CommandType == TEXT("get_state_tree_node_properties") ||
+                     CommandType == TEXT("add_state_tree_state") ||
+                     CommandType == TEXT("remove_state_tree_state") ||
+                     CommandType == TEXT("set_state_tree_state_property") ||
+                     CommandType == TEXT("add_state_tree_task") ||
+                     CommandType == TEXT("add_state_tree_transition") ||
+                     CommandType == TEXT("set_state_tree_node_property") ||
+                     CommandType == TEXT("compile_state_tree"))
+            {
+                ResultJson = StateTreeCommands->HandleCommand(CommandType, Params);
             }
             else
             {

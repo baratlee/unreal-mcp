@@ -275,6 +275,7 @@ from tools.umg_tools import register_umg_tools
 from tools.animation_tools import register_animation_tools
 from tools.input_tools import register_input_tools
 from tools.mesh_tools import register_mesh_tools
+from tools.statetree_tools import register_statetree_tools
 
 # Register tools
 register_editor_tools(mcp)
@@ -285,6 +286,7 @@ register_umg_tools(mcp)
 register_animation_tools(mcp)
 register_input_tools(mcp)
 register_mesh_tools(mcp)
+register_statetree_tools(mcp)
 
 @mcp.prompt()
 def info():
