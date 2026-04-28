@@ -307,6 +307,116 @@ def register_input_tools(mcp: FastMCP):
         return _send("add_imc_mapping_modifier", params)
 
     @mcp.tool()
+    def remove_imc_mapping_modifier(
+        ctx: Context,
+        asset_path: str,
+        mapping_index: int,
+        modifier_index: int,
+    ) -> Dict[str, Any]:
+        """Remove a modifier from a specific mapping in an InputMappingContext.
+
+        Args:
+            asset_path: IMC asset path
+            mapping_index: Index of the mapping
+            modifier_index: Index of the modifier to remove (from
+                get_input_mapping_context_info)
+
+        Returns:
+            Dict with success, asset_path, mapping_index, remaining_modifiers.
+        """
+        return _send("remove_imc_mapping_modifier", {
+            "asset_path": asset_path,
+            "mapping_index": mapping_index,
+            "modifier_index": modifier_index,
+        })
+
+    @mcp.tool()
+    def set_imc_mapping_modifier(
+        ctx: Context,
+        asset_path: str,
+        mapping_index: int,
+        modifier_index: int,
+        # DeadZone
+        lower_threshold: Optional[float] = None,
+        upper_threshold: Optional[float] = None,
+        dead_zone_type: Optional[str] = None,
+        # Negate
+        negate_x: Optional[bool] = None,
+        negate_y: Optional[bool] = None,
+        negate_z: Optional[bool] = None,
+        # SwizzleAxis
+        order: Optional[str] = None,
+        # Scalar
+        scalar_x: Optional[float] = None,
+        scalar_y: Optional[float] = None,
+        scalar_z: Optional[float] = None,
+        # FOVScaling
+        fov_scale: Optional[float] = None,
+        # ResponseCurveExponential
+        curve_exponent_x: Optional[float] = None,
+        curve_exponent_y: Optional[float] = None,
+        curve_exponent_z: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Modify properties of an existing modifier on a mapping.
+
+        Only the properties you pass will be updated; others are left
+        unchanged.  The modifier type is detected automatically from the
+        existing object — you do NOT need to specify modifier_class.
+
+        Args:
+            asset_path: IMC asset path
+            mapping_index: Index of the mapping
+            modifier_index: Index of the modifier to update
+
+            DeadZone params:
+                lower_threshold, upper_threshold: float
+                dead_zone_type: "Axial" or "Radial"
+
+            Negate params:
+                negate_x, negate_y, negate_z: bool
+
+            SwizzleAxis params:
+                order: "YXZ", "ZYX", "XZY", "YZX", or "ZXY"
+
+            Scalar params:
+                scalar_x, scalar_y, scalar_z: float
+
+            FOVScaling params:
+                fov_scale: float
+
+            ResponseCurveExponential params:
+                curve_exponent_x, curve_exponent_y, curve_exponent_z: float
+
+        Returns:
+            Dict with success, asset_path, mapping_index, modifier_index,
+            modifier_class.
+        """
+        params: dict = {
+            "asset_path": asset_path,
+            "mapping_index": mapping_index,
+            "modifier_index": modifier_index,
+        }
+        for name, val in [
+            ("lower_threshold", lower_threshold),
+            ("upper_threshold", upper_threshold),
+            ("dead_zone_type", dead_zone_type),
+            ("negate_x", negate_x),
+            ("negate_y", negate_y),
+            ("negate_z", negate_z),
+            ("order", order),
+            ("scalar_x", scalar_x),
+            ("scalar_y", scalar_y),
+            ("scalar_z", scalar_z),
+            ("fov_scale", fov_scale),
+            ("curve_exponent_x", curve_exponent_x),
+            ("curve_exponent_y", curve_exponent_y),
+            ("curve_exponent_z", curve_exponent_z),
+        ]:
+            if val is not None:
+                params[name] = val
+        return _send("set_imc_mapping_modifier", params)
+
+    @mcp.tool()
     def add_imc_mapping_trigger(
         ctx: Context,
         asset_path: str,
@@ -378,5 +488,105 @@ def register_input_tools(mcp: FastMCP):
             if val is not None:
                 params[name] = val
         return _send("add_imc_mapping_trigger", params)
+
+    @mcp.tool()
+    def remove_imc_mapping_trigger(
+        ctx: Context,
+        asset_path: str,
+        mapping_index: int,
+        trigger_index: int,
+    ) -> Dict[str, Any]:
+        """Remove a trigger from a specific mapping in an InputMappingContext.
+
+        Args:
+            asset_path: IMC asset path
+            mapping_index: Index of the mapping
+            trigger_index: Index of the trigger to remove (from
+                get_input_mapping_context_info)
+
+        Returns:
+            Dict with success, asset_path, mapping_index, remaining_triggers.
+        """
+        return _send("remove_imc_mapping_trigger", {
+            "asset_path": asset_path,
+            "mapping_index": mapping_index,
+            "trigger_index": trigger_index,
+        })
+
+    @mcp.tool()
+    def set_imc_mapping_trigger(
+        ctx: Context,
+        asset_path: str,
+        mapping_index: int,
+        trigger_index: int,
+        # Common
+        actuation_threshold: Optional[float] = None,
+        # Hold / HoldAndRelease
+        hold_time_threshold: Optional[float] = None,
+        # Hold
+        is_one_shot: Optional[bool] = None,
+        # Tap
+        tap_release_time_threshold: Optional[float] = None,
+        # Pulse
+        trigger_on_start: Optional[bool] = None,
+        interval: Optional[float] = None,
+        trigger_limit: Optional[int] = None,
+        # ChordAction
+        chord_action_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Modify properties of an existing trigger on a mapping.
+
+        Only the properties you pass will be updated; others are left
+        unchanged.  The trigger type is detected automatically from the
+        existing object — you do NOT need to specify trigger_class.
+
+        Args:
+            asset_path: IMC asset path
+            mapping_index: Index of the mapping
+            trigger_index: Index of the trigger to update
+
+            Common params:
+                actuation_threshold: float (default ~0.5)
+
+            Hold params:
+                hold_time_threshold: float (seconds)
+                is_one_shot: bool
+
+            HoldAndRelease params:
+                hold_time_threshold: float
+
+            Tap params:
+                tap_release_time_threshold: float
+
+            Pulse params:
+                trigger_on_start: bool
+                interval: float (seconds)
+                trigger_limit: int (0 = unlimited)
+
+            ChordAction params:
+                chord_action_path: asset path of the chord InputAction
+
+        Returns:
+            Dict with success, asset_path, mapping_index, trigger_index,
+            trigger_class.
+        """
+        params: dict = {
+            "asset_path": asset_path,
+            "mapping_index": mapping_index,
+            "trigger_index": trigger_index,
+        }
+        for name, val in [
+            ("actuation_threshold", actuation_threshold),
+            ("hold_time_threshold", hold_time_threshold),
+            ("is_one_shot", is_one_shot),
+            ("tap_release_time_threshold", tap_release_time_threshold),
+            ("trigger_on_start", trigger_on_start),
+            ("interval", interval),
+            ("trigger_limit", trigger_limit),
+            ("chord_action_path", chord_action_path),
+        ]:
+            if val is not None:
+                params[name] = val
+        return _send("set_imc_mapping_trigger", params)
 
     logger.info("Enhanced Input tools registered successfully (readers + writers)")

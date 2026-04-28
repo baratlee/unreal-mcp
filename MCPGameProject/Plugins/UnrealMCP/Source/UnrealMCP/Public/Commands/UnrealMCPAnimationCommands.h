@@ -47,7 +47,11 @@ private:
     TSharedPtr<FJsonObject> HandleAddIMCMapping(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleRemoveIMCMapping(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddIMCMappingModifier(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveIMCMappingModifier(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIMCMappingModifier(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddIMCMappingTrigger(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveIMCMappingTrigger(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIMCMappingTrigger(const TSharedPtr<FJsonObject>& Params);
 
     // Pose Search asset readers
     TSharedPtr<FJsonObject> HandleGetPoseSearchDatabaseInfo(const TSharedPtr<FJsonObject>& Params);

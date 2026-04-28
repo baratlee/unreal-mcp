@@ -359,7 +359,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_imc_mapping") ||
                      CommandType == TEXT("remove_imc_mapping") ||
                      CommandType == TEXT("add_imc_mapping_modifier") ||
+                     CommandType == TEXT("remove_imc_mapping_modifier") ||
+                     CommandType == TEXT("set_imc_mapping_modifier") ||
                      CommandType == TEXT("add_imc_mapping_trigger") ||
+                     CommandType == TEXT("remove_imc_mapping_trigger") ||
+                     CommandType == TEXT("set_imc_mapping_trigger") ||
                      CommandType == TEXT("get_pose_search_database_info") ||
                      CommandType == TEXT("get_pose_search_schema_info") ||
                      CommandType == TEXT("set_pose_search_database_schema") ||
