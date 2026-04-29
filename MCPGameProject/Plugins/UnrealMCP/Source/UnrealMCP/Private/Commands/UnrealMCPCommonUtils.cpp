@@ -757,7 +757,29 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
         }
     }
     
-    OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"), 
+    // Generic fallback: use ImportText to parse T3D-format strings.
+    // Covers FStructProperty, FNameProperty, FTextProperty, FDoubleProperty,
+    // FSoftObjectProperty, FObjectProperty, and any other type that supports
+    // text import (which is the format ExportTextItem_Direct produces).
+    if (Value->Type == EJson::String)
+    {
+        FString TextValue = Value->AsString();
+        const TCHAR* Buffer = *TextValue;
+        const TCHAR* Result = Property->ImportText_Direct(Buffer, PropertyAddr, Object, PPF_None);
+        if (Result)
+        {
+            UE_LOG(LogTemp, Display, TEXT("Set property %s via ImportText"), *PropertyName);
+            return true;
+        }
+        else
+        {
+            OutErrorMessage = FString::Printf(TEXT("ImportText failed for property %s (type: %s). Value: %s"),
+                *PropertyName, *Property->GetClass()->GetName(), *TextValue);
+            return false;
+        }
+    }
+
+    OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"),
                                     *Property->GetClass()->GetName(), *PropertyName);
     return false;
 } 

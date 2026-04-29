@@ -107,6 +107,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
     AnimationCommands = MakeShared<FUnrealMCPAnimationCommands>();
     StateTreeCommands = MakeShared<FUnrealMCPStateTreeCommands>();
+    DataAssetCommands = MakeShared<FUnrealMCPDataAssetCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -118,6 +119,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     UMGCommands.Reset();
     AnimationCommands.Reset();
     StateTreeCommands.Reset();
+    DataAssetCommands.Reset();
 }
 
 // Initialize subsystem
@@ -422,6 +424,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("compile_state_tree"))
             {
                 ResultJson = StateTreeCommands->HandleCommand(CommandType, Params);
+            }
+            // DataAsset Commands
+            else if (CommandType == TEXT("get_data_asset_info") ||
+                     CommandType == TEXT("set_data_asset_property") ||
+                     CommandType == TEXT("list_data_assets"))
+            {
+                ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
             }
             else
             {

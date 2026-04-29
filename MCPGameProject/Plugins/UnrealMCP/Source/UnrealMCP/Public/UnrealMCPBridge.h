@@ -15,6 +15,7 @@
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "Commands/UnrealMCPAnimationCommands.h"
 #include "Commands/UnrealMCPStateTreeCommands.h"
+#include "Commands/UnrealMCPDataAssetCommands.h"
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -65,4 +66,5 @@ private:
 	TSharedPtr<FUnrealMCPUMGCommands> UMGCommands;
 	TSharedPtr<FUnrealMCPAnimationCommands> AnimationCommands;
 	TSharedPtr<FUnrealMCPStateTreeCommands> StateTreeCommands;
+	TSharedPtr<FUnrealMCPDataAssetCommands> DataAssetCommands;
 };
