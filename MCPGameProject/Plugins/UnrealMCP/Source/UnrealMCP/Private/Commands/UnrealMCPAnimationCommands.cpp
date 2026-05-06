@@ -50,6 +50,8 @@
 #include "EnhancedActionKeyMapping.h"
 #include "InputTriggers.h"
 #include "InputModifiers.h"
+#include "PlayerMappableKeySettings.h"
+#include "Curves/CurveFloat.h"
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchSchema.h"
 #include "PoseSearch/PoseSearchFeatureChannel.h"
@@ -2495,8 +2497,13 @@ namespace
 
         Obj->SetStringField(TEXT("class"), Trigger->GetClass()->GetName());
         Obj->SetNumberField(TEXT("actuation_threshold"), Trigger->ActuationThreshold);
+        Obj->SetBoolField(TEXT("should_always_tick"), Trigger->bShouldAlwaysTick);
 
-        // Timed triggers
+        if (const UInputTriggerTimedBase* Timed = Cast<UInputTriggerTimedBase>(Trigger))
+        {
+            Obj->SetBoolField(TEXT("affected_by_time_dilation"), Timed->bAffectedByTimeDilation);
+        }
+
         if (const UInputTriggerHold* Hold = Cast<UInputTriggerHold>(Trigger))
         {
             Obj->SetNumberField(TEXT("hold_time_threshold"), Hold->HoldTimeThreshold);
@@ -2510,6 +2517,22 @@ namespace
         {
             Obj->SetNumberField(TEXT("tap_release_time_threshold"), Tap->TapReleaseTimeThreshold);
         }
+        else if (Cast<UInputTriggerRepeatedTap>(Trigger))
+        {
+            const UClass* C = Trigger->GetClass();
+            if (const FDoubleProperty* P = CastField<FDoubleProperty>(C->FindPropertyByName(TEXT("RepeatDelay"))))
+            {
+                Obj->SetNumberField(TEXT("repeat_delay"), P->GetPropertyValue_InContainer(Trigger));
+            }
+            if (const FIntProperty* P = CastField<FIntProperty>(C->FindPropertyByName(TEXT("NumberOfTapsWhichTriggerRepeat"))))
+            {
+                Obj->SetNumberField(TEXT("number_of_taps_which_trigger_repeat"), P->GetPropertyValue_InContainer(Trigger));
+            }
+            if (const FFloatProperty* P = CastField<FFloatProperty>(C->FindPropertyByName(TEXT("TapReleaseTimeThreshold"))))
+            {
+                Obj->SetNumberField(TEXT("tap_release_time_threshold"), P->GetPropertyValue_InContainer(Trigger));
+            }
+        }
         else if (const UInputTriggerPulse* Pulse = Cast<UInputTriggerPulse>(Trigger))
         {
             Obj->SetBoolField(TEXT("trigger_on_start"), Pulse->bTriggerOnStart);
@@ -2522,6 +2545,37 @@ namespace
             {
                 Obj->SetStringField(TEXT("chord_action"), Chord->ChordAction->GetPathName());
             }
+        }
+        else if (const UInputTriggerCombo* Combo = Cast<UInputTriggerCombo>(Trigger))
+        {
+            TArray<TSharedPtr<FJsonValue>> StepsJson;
+            for (const FInputComboStepData& Step : Combo->ComboActions)
+            {
+                TSharedPtr<FJsonObject> StepObj = MakeShared<FJsonObject>();
+                if (Step.ComboStepAction)
+                {
+                    StepObj->SetStringField(TEXT("action"), Step.ComboStepAction->GetPathName());
+                    StepObj->SetStringField(TEXT("action_name"), Step.ComboStepAction->GetName());
+                }
+                StepObj->SetNumberField(TEXT("completion_states"), (int32)Step.ComboStepCompletionStates);
+                StepObj->SetNumberField(TEXT("time_to_press_key"), Step.TimeToPressKey);
+                StepsJson.Add(MakeShared<FJsonValueObject>(StepObj));
+            }
+            Obj->SetArrayField(TEXT("combo_actions"), StepsJson);
+
+            TArray<TSharedPtr<FJsonValue>> CancelsJson;
+            for (const FInputCancelAction& Cancel : Combo->InputCancelActions)
+            {
+                TSharedPtr<FJsonObject> CancelObj = MakeShared<FJsonObject>();
+                if (Cancel.CancelAction)
+                {
+                    CancelObj->SetStringField(TEXT("action"), Cancel.CancelAction->GetPathName());
+                    CancelObj->SetStringField(TEXT("action_name"), Cancel.CancelAction->GetName());
+                }
+                CancelObj->SetNumberField(TEXT("cancellation_states"), (int32)Cancel.CancellationStates);
+                CancelsJson.Add(MakeShared<FJsonValueObject>(CancelObj));
+            }
+            Obj->SetArrayField(TEXT("cancel_actions"), CancelsJson);
         }
 
         return Obj;
@@ -2570,6 +2624,24 @@ namespace
         else if (const UInputModifierFOVScaling* FOV = Cast<UInputModifierFOVScaling>(Modifier))
         {
             Obj->SetNumberField(TEXT("fov_scale"), FOV->FOVScale);
+            Obj->SetStringField(TEXT("fov_scaling_type"),
+                FOV->FOVScalingType == EFOVScalingType::UE4_BackCompat ? TEXT("UE4_BackCompat") : TEXT("Standard"));
+        }
+        else if (const UInputModifierSmoothDelta* SD = Cast<UInputModifierSmoothDelta>(Modifier))
+        {
+            const UEnum* SmoothEnum = StaticEnum<ENormalizeInputSmoothingType>();
+            if (SmoothEnum)
+            {
+                Obj->SetStringField(TEXT("smoothing_method"), SmoothEnum->GetNameStringByValue((int64)SD->SmoothingMethod));
+            }
+            Obj->SetNumberField(TEXT("speed"), SD->Speed);
+            Obj->SetNumberField(TEXT("easing_exponent"), SD->EasingExponent);
+        }
+        else if (const UInputModifierResponseCurveUser* UserCurve = Cast<UInputModifierResponseCurveUser>(Modifier))
+        {
+            if (UserCurve->ResponseX) Obj->SetStringField(TEXT("response_x"), UserCurve->ResponseX->GetPathName());
+            if (UserCurve->ResponseY) Obj->SetStringField(TEXT("response_y"), UserCurve->ResponseY->GetPathName());
+            if (UserCurve->ResponseZ) Obj->SetStringField(TEXT("response_z"), UserCurve->ResponseZ->GetPathName());
         }
 
         return Obj;
@@ -2593,6 +2665,70 @@ namespace
             if (M) Arr.Add(MakeShared<FJsonValueObject>(SerializeModifier(M)));
         }
         return Arr;
+    }
+
+    FString AccumulationBehaviorToString(EInputActionAccumulationBehavior B)
+    {
+        return B == EInputActionAccumulationBehavior::Cumulative ? TEXT("Cumulative") : TEXT("TakeHighestAbsoluteValue");
+    }
+
+    TArray<TSharedPtr<FJsonValue>> SerializeMappingArray(const TArray<FEnhancedActionKeyMapping>& Mappings)
+    {
+        TArray<TSharedPtr<FJsonValue>> MappingsJson;
+        for (const FEnhancedActionKeyMapping& Mapping : Mappings)
+        {
+            TSharedPtr<FJsonObject> MObj = MakeShared<FJsonObject>();
+
+            if (Mapping.Action)
+            {
+                MObj->SetStringField(TEXT("action"), Mapping.Action->GetPathName());
+                MObj->SetStringField(TEXT("action_name"), Mapping.Action->GetName());
+                MObj->SetStringField(TEXT("value_type"), InputActionValueTypeToString(Mapping.Action->ValueType));
+                MObj->SetStringField(TEXT("action_description"), Mapping.Action->ActionDescription.ToString());
+                MObj->SetBoolField(TEXT("action_consume_input"), Mapping.Action->bConsumeInput);
+                MObj->SetBoolField(TEXT("action_consumes_action_and_axis_mappings"), Mapping.Action->bConsumesActionAndAxisMappings);
+                MObj->SetBoolField(TEXT("action_trigger_when_paused"), Mapping.Action->bTriggerWhenPaused);
+                MObj->SetBoolField(TEXT("action_reserve_all_mappings"), Mapping.Action->bReserveAllMappings);
+                MObj->SetStringField(TEXT("action_accumulation_behavior"), AccumulationBehaviorToString(Mapping.Action->AccumulationBehavior));
+            }
+            else
+            {
+                MObj->SetStringField(TEXT("action"), TEXT("None"));
+            }
+
+            MObj->SetStringField(TEXT("key"), Mapping.Key.GetFName().ToString());
+
+            MObj->SetBoolField(TEXT("is_player_mappable"), Mapping.IsPlayerMappable());
+            if (Mapping.IsPlayerMappable())
+            {
+                FName MappingName = Mapping.GetMappingName();
+                if (!MappingName.IsNone())
+                {
+                    MObj->SetStringField(TEXT("mapping_name"), MappingName.ToString());
+                }
+                const FText& DisplayName = Mapping.GetDisplayName();
+                if (!DisplayName.IsEmpty())
+                {
+                    MObj->SetStringField(TEXT("display_name"), DisplayName.ToString());
+                }
+                const FText& DisplayCategory = Mapping.GetDisplayCategory();
+                if (!DisplayCategory.IsEmpty())
+                {
+                    MObj->SetStringField(TEXT("display_category"), DisplayCategory.ToString());
+                }
+            }
+
+            TArray<TSharedPtr<FJsonValue>> TriggersJson = SerializeTriggerArray(Mapping.Triggers);
+            MObj->SetNumberField(TEXT("trigger_count"), TriggersJson.Num());
+            MObj->SetArrayField(TEXT("triggers"), TriggersJson);
+
+            TArray<TSharedPtr<FJsonValue>> ModifiersJson = SerializeModifierArray(Mapping.Modifiers);
+            MObj->SetNumberField(TEXT("modifier_count"), ModifiersJson.Num());
+            MObj->SetArrayField(TEXT("modifiers"), ModifiersJson);
+
+            MappingsJson.Add(MakeShared<FJsonValueObject>(MObj));
+        }
+        return MappingsJson;
     }
 }
 
@@ -2619,8 +2755,11 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetInputActionInfo(co
     Result->SetStringField(TEXT("value_type"), InputActionValueTypeToString(IA->ValueType));
     Result->SetStringField(TEXT("description"), IA->ActionDescription.ToString());
     Result->SetBoolField(TEXT("consume_input"), IA->bConsumeInput);
+    Result->SetBoolField(TEXT("consumes_action_and_axis_mappings"), IA->bConsumesActionAndAxisMappings);
     Result->SetBoolField(TEXT("trigger_when_paused"), IA->bTriggerWhenPaused);
     Result->SetBoolField(TEXT("reserve_all_mappings"), IA->bReserveAllMappings);
+    Result->SetStringField(TEXT("accumulation_behavior"), AccumulationBehaviorToString(IA->AccumulationBehavior));
+    Result->SetNumberField(TEXT("trigger_events_that_consume_legacy_keys"), IA->TriggerEventsThatConsumeLegacyKeys);
 
     // Triggers
     TArray<TSharedPtr<FJsonValue>> TriggersJson = SerializeTriggerArray(IA->Triggers);
@@ -2657,44 +2796,40 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetInputMappingContex
     Result->SetStringField(TEXT("asset_path"), IMC->GetPathName());
     Result->SetStringField(TEXT("description"), IMC->ContextDescription.ToString());
 
-    // Get mappings via public API
-    const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
-
-    TArray<TSharedPtr<FJsonValue>> MappingsJson;
-    for (const FEnhancedActionKeyMapping& Mapping : Mappings)
+    switch (IMC->GetRegistrationTrackingMode())
     {
-        TSharedPtr<FJsonObject> MappingObj = MakeShared<FJsonObject>();
-
-        // Action
-        if (Mapping.Action)
-        {
-            MappingObj->SetStringField(TEXT("action"), Mapping.Action->GetPathName());
-            MappingObj->SetStringField(TEXT("action_name"), Mapping.Action->GetName());
-            MappingObj->SetStringField(TEXT("value_type"), InputActionValueTypeToString(Mapping.Action->ValueType));
-        }
-        else
-        {
-            MappingObj->SetStringField(TEXT("action"), TEXT("None"));
-        }
-
-        // Key
-        MappingObj->SetStringField(TEXT("key"), Mapping.Key.GetFName().ToString());
-
-        // Triggers
-        TArray<TSharedPtr<FJsonValue>> TriggersJson = SerializeTriggerArray(Mapping.Triggers);
-        MappingObj->SetNumberField(TEXT("trigger_count"), TriggersJson.Num());
-        MappingObj->SetArrayField(TEXT("triggers"), TriggersJson);
-
-        // Modifiers
-        TArray<TSharedPtr<FJsonValue>> ModifiersJson = SerializeModifierArray(Mapping.Modifiers);
-        MappingObj->SetNumberField(TEXT("modifier_count"), ModifiersJson.Num());
-        MappingObj->SetArrayField(TEXT("modifiers"), ModifiersJson);
-
-        MappingsJson.Add(MakeShared<FJsonValueObject>(MappingObj));
+    case EMappingContextRegistrationTrackingMode::CountRegistrations:
+        Result->SetStringField(TEXT("registration_tracking_mode"), TEXT("CountRegistrations")); break;
+    default:
+        Result->SetStringField(TEXT("registration_tracking_mode"), TEXT("Untracked")); break;
     }
 
+    Result->SetBoolField(TEXT("should_filter_by_input_mode"), IMC->ShouldFilterMappingByInputMode());
+    if (IMC->ShouldFilterMappingByInputMode())
+    {
+        FGameplayTagQuery Query = IMC->GetInputModeQuery();
+        Result->SetStringField(TEXT("input_mode_query"), Query.GetDescription());
+    }
+
+    const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+    TArray<TSharedPtr<FJsonValue>> MappingsJson = SerializeMappingArray(Mappings);
     Result->SetNumberField(TEXT("mapping_count"), MappingsJson.Num());
     Result->SetArrayField(TEXT("mappings"), MappingsJson);
+
+    TArray<FString> Profiles = IMC->GetProfilesWithOverridenMappings();
+    if (Profiles.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> ProfileIdsJson;
+        TSharedPtr<FJsonObject> ProfilesObj = MakeShared<FJsonObject>();
+        for (const FString& ProfileId : Profiles)
+        {
+            ProfileIdsJson.Add(MakeShared<FJsonValueString>(ProfileId));
+            const TArray<FEnhancedActionKeyMapping>& ProfMappings = IMC->GetMappingsForProfile(ProfileId);
+            ProfilesObj->SetArrayField(ProfileId, SerializeMappingArray(ProfMappings));
+        }
+        Result->SetArrayField(TEXT("profile_ids"), ProfileIdsJson);
+        Result->SetObjectField(TEXT("profile_overrides"), ProfilesObj);
+    }
 
     return Result;
 }

@@ -39,7 +39,7 @@ def register_input_tools(mcp: FastMCP):
     def get_input_action_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
         """Read an InputAction (IA) data asset.
 
-        Returns the action's ValueType, Triggers, Modifiers, and flags.
+        Returns the action's ValueType, Triggers, Modifiers, and all flags.
 
         Args:
             asset_path: Asset path of the InputAction,
@@ -47,27 +47,61 @@ def register_input_tools(mcp: FastMCP):
 
         Returns:
             Dict with asset_path, value_type (Boolean/Axis1D/Axis2D/Axis3D),
-            description, consume_input, trigger_when_paused,
-            reserve_all_mappings, trigger_count, triggers[], modifier_count,
-            modifiers[].
+            description, consume_input, consumes_action_and_axis_mappings,
+            trigger_when_paused, reserve_all_mappings,
+            accumulation_behavior (TakeHighestAbsoluteValue/Cumulative),
+            trigger_events_that_consume_legacy_keys (bitmask int),
+            trigger_count, triggers[], modifier_count, modifiers[].
+
+            Each trigger has: class, actuation_threshold,
+            should_always_tick, and subclass fields (hold_time_threshold,
+            is_one_shot, tap_release_time_threshold, interval,
+            trigger_limit, trigger_on_start, chord_action,
+            affected_by_time_dilation, repeat_delay,
+            number_of_taps_which_trigger_repeat,
+            combo_actions[], cancel_actions[]).
+
+            Each modifier has: class, and subclass fields
+            (lower_threshold, upper_threshold, type, scalar, negate x/y/z,
+            order, curve_exponent, fov_scale, fov_scaling_type,
+            smoothing_method, speed, easing_exponent,
+            response_x/y/z curve paths).
         """
         return _send("get_input_action_info", {"asset_path": asset_path})
 
     @mcp.tool()
     def get_input_mapping_context_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
-        """Read an InputMappingContext (IMC) data asset.
+        """Read an InputMappingContext (IMC) data asset — full detail.
 
-        Returns every key mapping with its bound InputAction, key, triggers,
-        and modifiers.
+        Returns IMC-level metadata, every default key mapping (with inline
+        action details, player-mappable settings, triggers, modifiers), and
+        any profile-override mappings.
 
         Args:
             asset_path: Asset path of the InputMappingContext,
                 e.g. "/Game/ThirdParty/GameAnimationSample/Input/IMC_Sandbox"
 
         Returns:
-            Dict with asset_path, description, mapping_count,
-            mappings[{action, action_name, value_type, key, trigger_count,
-            triggers[], modifier_count, modifiers[]}].
+            Dict with:
+              IMC-level:
+                asset_path, description,
+                registration_tracking_mode (Untracked/CountRegistrations),
+                should_filter_by_input_mode (bool),
+                input_mode_query (string, only if filtering is active).
+
+              mappings[] — each entry:
+                action, action_name, value_type, key,
+                action_description, action_consume_input,
+                action_consumes_action_and_axis_mappings,
+                action_trigger_when_paused, action_reserve_all_mappings,
+                action_accumulation_behavior,
+                is_player_mappable (bool),
+                mapping_name, display_name, display_category (if mappable),
+                trigger_count, triggers[], modifier_count, modifiers[].
+
+              profile_ids[] — list of profile IDs (if any overrides exist).
+              profile_overrides{} — keyed by profile ID, each value is a
+                mappings array with the same per-mapping structure above.
         """
         return _send("get_input_mapping_context_info", {"asset_path": asset_path})
 
