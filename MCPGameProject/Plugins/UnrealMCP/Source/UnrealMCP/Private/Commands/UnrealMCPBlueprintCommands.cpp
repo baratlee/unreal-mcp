@@ -666,52 +666,53 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
             Blueprint->GeneratedClass ? *Blueprint->GeneratedClass->GetName() : TEXT("NULL"));
     }
 
-    // Find the component
-    USCS_Node* ComponentNode = nullptr;
-    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Searching for component %s in blueprint nodes"), *ComponentName);
-    
-    if (!Blueprint->SimpleConstructionScript)
+    // Find the component template using unified search (SCS + inherited + native)
+    UObject* ComponentTemplate = nullptr;
+    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Searching for component %s"), *ComponentName);
+
+    // 1. Try current BP's own SCS first
+    if (Blueprint->SimpleConstructionScript)
     {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - SimpleConstructionScript is NULL for blueprint %s"), *BlueprintName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
-    }
-    
-    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
-    {
-        if (Node)
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
         {
-            UE_LOG(LogTemp, Verbose, TEXT("SetComponentProperty - Found node: %s"), *Node->GetVariableName().ToString());
-            if (Node->GetVariableName().ToString() == ComponentName)
+            if (Node && Node->ComponentTemplate &&
+                Node->GetVariableName().ToString() == ComponentName)
             {
-                ComponentNode = Node;
+                ComponentTemplate = Node->ComponentTemplate;
+                UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Found in SCS"));
                 break;
             }
         }
-        else
+    }
+
+    // 2. If not in SCS, search inherited/native via generated class CDO
+    if (!ComponentTemplate && Blueprint->GeneratedClass)
+    {
+        AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+        if (CDO)
         {
-            UE_LOG(LogTemp, Warning, TEXT("SetComponentProperty - Found NULL node in blueprint"));
+            TInlineComponentArray<UActorComponent*> Components;
+            CDO->GetComponents(Components);
+            for (UActorComponent* Comp : Components)
+            {
+                if (Comp && Comp->GetName() == ComponentName)
+                {
+                    ComponentTemplate = Comp;
+                    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Found on generated class CDO (inherited/native)"));
+                    break;
+                }
+            }
         }
     }
 
-    if (!ComponentNode)
+    if (!ComponentTemplate)
     {
         UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Component not found: %s"), *ComponentName);
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
     }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Component found: %s (Class: %s)"), 
-            *ComponentName, 
-            ComponentNode->ComponentTemplate ? *ComponentNode->ComponentTemplate->GetClass()->GetName() : TEXT("NULL"));
-    }
 
-    // Get the component template
-    UObject* ComponentTemplate = ComponentNode->ComponentTemplate;
-    if (!ComponentTemplate)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Component template is NULL for %s"), *ComponentName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid component template"));
-    }
+    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Component found: %s (Class: %s)"),
+        *ComponentName, *ComponentTemplate->GetClass()->GetName());
 
     // Check if this is a Spring Arm component and log special debug info
     if (ComponentTemplate->GetClass()->GetName().Contains(TEXT("SpringArm")))
@@ -2429,6 +2430,25 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetComponentPropertie
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+    }
+
+    // For native/inherited components, prefer the generated class CDO which
+    // holds Blueprint-level property overrides rather than parent defaults
+    if (Source.StartsWith(TEXT("native:")) && Blueprint->GeneratedClass)
+    {
+        if (AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject()))
+        {
+            TInlineComponentArray<UActorComponent*> Components;
+            CDO->GetComponents(Components);
+            for (UActorComponent* Comp : Components)
+            {
+                if (Comp && Comp->GetName() == ComponentName)
+                {
+                    ComponentObj = Comp;
+                    break;
+                }
+            }
+        }
     }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
