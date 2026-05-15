@@ -34,4 +34,8 @@ private:
 
     // Asset inspection commands
     TSharedPtr<FJsonObject> HandleGetStaticMeshInfo(const TSharedPtr<FJsonObject>& Params);
+
+    // Batch E: P1 from UnrealMCP_API_ExpansionRequest.md (asset persistence & deletion)
+    TSharedPtr<FJsonObject> HandleSaveDirtyAssets(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDeleteAsset(const TSharedPtr<FJsonObject>& Params);
 }; 

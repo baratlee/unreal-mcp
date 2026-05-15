@@ -37,6 +37,14 @@
 // AnimGraph node reflection (for method-A: anim_node_properties / property_bindings dump)
 #include "AnimGraphNode_Base.h"
 #include "JsonObjectConverter.h"
+// Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
+#include "AnimationGraph.h"
+#include "AnimationGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 
 namespace
 {
@@ -406,6 +414,27 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("get_blueprint_cdo_properties"))
     {
         return HandleGetBlueprintCDOProperties(Params);
+    }
+    // Batch E (Docs/UnrealMCP_API_ExpansionRequest.md)
+    else if (CommandType == TEXT("create_blueprint_from_parent_blueprint"))
+    {
+        return HandleCreateBlueprintFromParentBlueprint(Params);
+    }
+    else if (CommandType == TEXT("add_anim_graph_node"))
+    {
+        return HandleAddAnimGraphNode(Params);
+    }
+    else if (CommandType == TEXT("connect_anim_graph_nodes"))
+    {
+        return HandleConnectAnimGraphNodes(Params);
+    }
+    else if (CommandType == TEXT("set_anim_graph_node_property"))
+    {
+        return HandleSetAnimGraphNodeProperty(Params);
+    }
+    else if (CommandType == TEXT("add_blueprint_function_graph"))
+    {
+        return HandleAddBlueprintFunctionGraph(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -2616,4 +2645,565 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintCDOProper
 
     ResultObj->SetArrayField(TEXT("properties"), PropsArray);
     return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// =============================================================================
+// Batch E (Docs/UnrealMCP_API_ExpansionRequest.md): Blueprint write extensions
+//   - create_blueprint_from_parent_blueprint
+//   - add_anim_graph_node / connect_anim_graph_nodes / set_anim_graph_node_property
+//   - add_blueprint_function_graph
+// =============================================================================
+
+namespace
+{
+    // Walk Blueprint->UbergraphPages, ->FunctionGraphs, ->IntermediateGeneratedGraphs to find a
+    // named graph (e.g. "AnimGraph" / "EventGraph" / user-defined function name).
+    // Returns nullptr if not found. Case-insensitive match.
+    UEdGraph* FindGraphInBlueprint(UBlueprint* Blueprint, const FString& GraphName)
+    {
+        if (!Blueprint) return nullptr;
+        auto Match = [&GraphName](UEdGraph* G) -> bool
+        {
+            return G && G->GetName().Equals(GraphName, ESearchCase::IgnoreCase);
+        };
+        for (UEdGraph* G : Blueprint->UbergraphPages) { if (Match(G)) return G; }
+        for (UEdGraph* G : Blueprint->FunctionGraphs) { if (Match(G)) return G; }
+        for (UEdGraph* G : Blueprint->MacroGraphs)    { if (Match(G)) return G; }
+        for (UEdGraph* G : Blueprint->DelegateSignatureGraphs) { if (Match(G)) return G; }
+        return nullptr;
+    }
+
+    // Find a node by GUID anywhere in a blueprint (searches all graph collections including
+    // sub-graphs reachable via SubGraphs). Returns the node and the owning graph.
+    bool FindNodeByGuid(UBlueprint* Blueprint, const FString& Guid, UEdGraphNode*& OutNode, UEdGraph*& OutGraph)
+    {
+        OutNode = nullptr; OutGraph = nullptr;
+        if (!Blueprint) return false;
+
+        TArray<UEdGraph*> Stack;
+        Stack.Append(Blueprint->UbergraphPages);
+        Stack.Append(Blueprint->FunctionGraphs);
+        Stack.Append(Blueprint->MacroGraphs);
+        Stack.Append(Blueprint->DelegateSignatureGraphs);
+        // BFS into sub-graphs.
+        for (int32 i = 0; i < Stack.Num(); ++i)
+        {
+            UEdGraph* G = Stack[i];
+            if (!G) continue;
+            for (UEdGraph* Sub : G->SubGraphs) { if (Sub) Stack.Add(Sub); }
+            for (UEdGraphNode* N : G->Nodes)
+            {
+                if (N && N->NodeGuid.ToString() == Guid)
+                {
+                    OutNode = N; OutGraph = G;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Split "/Game/Foo/Bar.Bar" or "/Game/Foo/Bar" to (package, asset).
+    bool SplitAssetPathBP(const FString& InPath, FString& OutPackage, FString& OutAsset)
+    {
+        OutPackage = InPath;
+        int32 Dot = INDEX_NONE;
+        if (OutPackage.FindChar('.', Dot)) OutPackage = OutPackage.Left(Dot);
+        int32 Slash = INDEX_NONE;
+        if (!OutPackage.FindLastChar('/', Slash) || Slash + 1 >= OutPackage.Len()) return false;
+        OutAsset = OutPackage.Mid(Slash + 1);
+        return !OutAsset.IsEmpty();
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprintFromParentBlueprint(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ParentBPPath, NewAssetPath;
+    if (!Params->TryGetStringField(TEXT("parent_blueprint_path"), ParentBPPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parent_blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("new_asset_path"), NewAssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'new_asset_path' parameter"));
+
+    UBlueprint* ParentBP = FUnrealMCPCommonUtils::FindBlueprintByPath(ParentBPPath);
+    if (!ParentBP)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Parent blueprint not found: %s"), *ParentBPPath));
+
+    UClass* ParentClass = Cast<UClass>(ParentBP->GeneratedClass);
+    if (!ParentClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Parent blueprint has no GeneratedClass (uncompiled?): %s"), *ParentBPPath));
+    }
+
+    FString PackageName, AssetName;
+    if (!SplitAssetPathBP(NewAssetPath, PackageName, AssetName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid new_asset_path: %s"), *NewAssetPath));
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UBlueprint>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Blueprint already exists: %s"), *NewAssetPath));
+        }
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("CreatePackage failed: %s"), *PackageName));
+    Package->FullyLoad();
+
+    // Pick the right Blueprint UClass to use — for AnimBlueprints we want UAnimBlueprint so the
+    // resulting asset has FunctionGraphs[0]=AnimGraph etc. wired up by the engine.
+    TSubclassOf<UBlueprint> BPClass = ParentBP->GetClass();
+    TSubclassOf<UBlueprintGeneratedClass> BPGenClass = ParentBP->GeneratedClass ? ParentBP->GeneratedClass->GetClass() : UBlueprintGeneratedClass::StaticClass();
+
+    UBlueprint* NewBP = FKismetEditorUtilities::CreateBlueprint(
+        ParentClass,
+        Package,
+        FName(*AssetName),
+        BPTYPE_Normal,
+        BPClass,
+        BPGenClass,
+        NAME_None);
+
+    if (!NewBP)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("FKismetEditorUtilities::CreateBlueprint returned null"));
+
+    FAssetRegistryModule::AssetCreated(NewBP);
+    Package->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewBP->GetPathName());
+    Result->SetStringField(TEXT("parent_blueprint_path"), ParentBP->GetPathName());
+    Result->SetStringField(TEXT("parent_class"), ParentClass->GetPathName());
+    Result->SetStringField(TEXT("blueprint_class"), NewBP->GetClass()->GetName());
+    Result->SetBoolField(TEXT("saved"), false);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddAnimGraphNode(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, NodeClassName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("node_class"), NodeClassName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_class' parameter (e.g. 'AnimGraphNode_RetargetPoseFromMesh')"));
+
+    FString GraphName = TEXT("AnimGraph");
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    FVector2D Pos(0.0f, 0.0f);
+    if (Params->HasField(TEXT("node_position")))
+    {
+        Pos = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+
+    UEdGraph* Graph = FindGraphInBlueprint(Blueprint, GraphName);
+    if (!Graph)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Graph '%s' not found in blueprint %s"), *GraphName, *BlueprintPath));
+
+    // Resolve the node UClass. Accept either a bare name ("AnimGraphNode_RetargetPoseFromMesh") or
+    // a full classpath ("/Script/AnimGraph.AnimGraphNode_RetargetPoseFromMesh"). FindFirstObject
+    // is more forgiving than FindObject for bare names.
+    UClass* NodeClass = nullptr;
+    if (NodeClassName.Contains(TEXT(".")) || NodeClassName.StartsWith(TEXT("/Script/")))
+    {
+        NodeClass = LoadClass<UEdGraphNode>(nullptr, *NodeClassName);
+    }
+    if (!NodeClass)
+    {
+        NodeClass = FindFirstObject<UClass>(*NodeClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning);
+    }
+    if (!NodeClass || !NodeClass->IsChildOf(UAnimGraphNode_Base::StaticClass()))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("node_class '%s' is not a UAnimGraphNode_Base subclass"), *NodeClassName));
+    }
+
+    UAnimGraphNode_Base* NewNode = NewObject<UAnimGraphNode_Base>(Graph, NodeClass, NAME_None, RF_Transactional);
+    if (!NewNode)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NewObject<UAnimGraphNode_Base> returned null"));
+
+    NewNode->NodePosX = Pos.X;
+    NewNode->NodePosY = Pos.Y;
+    Graph->AddNode(NewNode, /*bFromUI=*/false, /*bSelectNewNode=*/false);
+    NewNode->CreateNewGuid();
+    NewNode->PostPlacedNewNode();
+    NewNode->AllocateDefaultPins();
+    NewNode->ReconstructNode();
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("graph_name"), Graph->GetName());
+    Result->SetStringField(TEXT("node_guid"), NewNode->NodeGuid.ToString());
+    Result->SetStringField(TEXT("node_class"), NodeClass->GetName());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleConnectAnimGraphNodes(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, SourceGuid, TargetGuid, SourcePin, TargetPin;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("source_node_id"), SourceGuid))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_node_id' parameter"));
+    if (!Params->TryGetStringField(TEXT("target_node_id"), TargetGuid))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_node_id' parameter"));
+    if (!Params->TryGetStringField(TEXT("source_pin"), SourcePin))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_pin' parameter"));
+    if (!Params->TryGetStringField(TEXT("target_pin"), TargetPin))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_pin' parameter"));
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+
+    UEdGraphNode* SrcNode = nullptr; UEdGraph* SrcGraph = nullptr;
+    UEdGraphNode* DstNode = nullptr; UEdGraph* DstGraph = nullptr;
+    FindNodeByGuid(Blueprint, SourceGuid, SrcNode, SrcGraph);
+    FindNodeByGuid(Blueprint, TargetGuid, DstNode, DstGraph);
+    if (!SrcNode || !DstNode)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source or target node not found by GUID"));
+    if (SrcGraph != DstGraph)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source and target nodes are in different graphs"));
+
+    if (!FUnrealMCPCommonUtils::ConnectGraphNodes(SrcGraph, SrcNode, SourcePin, DstNode, TargetPin))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("ConnectGraphNodes failed (check pin names + directions)"));
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("graph_name"), SrcGraph->GetName());
+    Result->SetStringField(TEXT("source_node_id"), SourceGuid);
+    Result->SetStringField(TEXT("target_node_id"), TargetGuid);
+    Result->SetStringField(TEXT("source_pin"), SourcePin);
+    Result->SetStringField(TEXT("target_pin"), TargetPin);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodeProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    // Three update modes — caller picks via params:
+    //   (A) field_path + value           → set a UPROPERTY on either the inner FAnimNode_* struct
+    //                                       (anim_node_properties domain) or the editor-side
+    //                                       UAnimGraphNode_* UObject (node_object_properties).
+    //                                       We try the inner FAnimNode_* first, then fall back to
+    //                                       the node UObject.
+    //   (B) property_binding={
+    //          property_name, property_path[], (optional) context_id, (optional) type
+    //       }                              → add/replace an entry in Binding->PropertyBindings.
+    //   (C) clear_binding=property_name    → remove an entry from Binding->PropertyBindings.
+    // All three coexist in one call; they run in (A) → (B) → (C) order.
+
+    FString BlueprintPath, NodeGuid;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("node_guid"), NodeGuid))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_guid' parameter"));
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+
+    UEdGraphNode* Node = nullptr; UEdGraph* Graph = nullptr;
+    if (!FindNodeByGuid(Blueprint, NodeGuid, Node, Graph) || !Node)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Node not found by GUID: %s"), *NodeGuid));
+
+    UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+    if (!AnimNode)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Node is not a UAnimGraphNode_Base (got %s)"), *Node->GetClass()->GetName()));
+
+    TArray<TSharedPtr<FJsonValue>> AppliedJson;
+    bool bAnyChange = false;
+
+    // ── (A) Direct field write ──
+    FString FieldPath, FieldValue;
+    if (Params->TryGetStringField(TEXT("field_path"), FieldPath) &&
+        Params->TryGetStringField(TEXT("value"), FieldValue))
+    {
+        // Locate the inner FAnimNode_* struct via reflection.
+        FStructProperty* InnerStructProp = nullptr;
+        for (TFieldIterator<FStructProperty> PropIt(AnimNode->GetClass()); PropIt; ++PropIt)
+        {
+            FStructProperty* SP = *PropIt;
+            if (SP && SP->Struct && SP->Struct->GetName().StartsWith(TEXT("AnimNode_")))
+            {
+                InnerStructProp = SP;
+                break;
+            }
+        }
+
+        bool bApplied = false;
+        FString WhichDomain;
+        FProperty* LeafProp = nullptr;
+        void* LeafValPtr = nullptr;
+
+        // Try (1) inner FAnimNode_* struct first.
+        if (InnerStructProp)
+        {
+            void* InnerMem = InnerStructProp->ContainerPtrToValuePtr<void>(AnimNode);
+            TArray<FString> Segments;
+            FieldPath.ParseIntoArray(Segments, TEXT("."), true);
+
+            const UScriptStruct* CurStruct = InnerStructProp->Struct;
+            void* CurMem = InnerMem;
+            bool bResolved = true;
+            for (int32 i = 0; i < Segments.Num(); ++i)
+            {
+                FProperty* P = CurStruct->FindPropertyByName(FName(*Segments[i]));
+                if (!P) { bResolved = false; break; }
+                void* InnerVal = P->ContainerPtrToValuePtr<void>(CurMem);
+                if (i == Segments.Num() - 1)
+                {
+                    LeafProp = P; LeafValPtr = InnerVal;
+                    break;
+                }
+                FStructProperty* AsStruct = CastField<FStructProperty>(P);
+                if (!AsStruct) { bResolved = false; break; }
+                CurStruct = AsStruct->Struct;
+                CurMem = InnerVal;
+            }
+            if (bResolved && LeafProp)
+            {
+                if (LeafProp->ImportText_Direct(*FieldValue, LeafValPtr, /*OwnerObject=*/nullptr, PPF_None, GLog))
+                {
+                    bApplied = true;
+                    WhichDomain = TEXT("anim_node_properties");
+                }
+            }
+        }
+
+        // Fallback (2): UAnimGraphNode_* UObject-side UPROPERTY.
+        if (!bApplied)
+        {
+            TArray<FString> Segments;
+            FieldPath.ParseIntoArray(Segments, TEXT("."), true);
+            UStruct* CurStruct = AnimNode->GetClass();
+            void* CurMem = AnimNode;
+            bool bResolved = true;
+            LeafProp = nullptr; LeafValPtr = nullptr;
+            for (int32 i = 0; i < Segments.Num(); ++i)
+            {
+                FProperty* P = CurStruct->FindPropertyByName(FName(*Segments[i]));
+                if (!P) { bResolved = false; break; }
+                void* InnerVal = P->ContainerPtrToValuePtr<void>(CurMem);
+                if (i == Segments.Num() - 1)
+                {
+                    LeafProp = P; LeafValPtr = InnerVal;
+                    break;
+                }
+                FStructProperty* AsStruct = CastField<FStructProperty>(P);
+                if (!AsStruct) { bResolved = false; break; }
+                CurStruct = AsStruct->Struct;
+                CurMem = InnerVal;
+            }
+            if (bResolved && LeafProp)
+            {
+                if (LeafProp->ImportText_Direct(*FieldValue, LeafValPtr, /*OwnerObject=*/AnimNode, PPF_None, GLog))
+                {
+                    bApplied = true;
+                    WhichDomain = TEXT("node_object_properties");
+                }
+            }
+        }
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("mode"), TEXT("field"));
+        Entry->SetStringField(TEXT("field_path"), FieldPath);
+        Entry->SetStringField(TEXT("value"), FieldValue);
+        Entry->SetBoolField(TEXT("ok"), bApplied);
+        if (bApplied) Entry->SetStringField(TEXT("domain"), WhichDomain);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(Entry));
+        bAnyChange = bAnyChange || bApplied;
+
+        if (!bApplied)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Failed to set field '%s'='%s' on node %s — neither the inner FAnimNode_* nor the UAnimGraphNode_* UPROPERTY resolved that path"),
+                    *FieldPath, *FieldValue, *AnimNode->GetClass()->GetName()));
+        }
+    }
+
+    // Helper: resolve the Binding sub-object + its PropertyBindings TMap. Defined once and
+    // shared by both the (B) write path and the (C) clear path.
+    auto ResolveBindingMap = [&](UObject*& OutBindingObj, FMapProperty*& OutMapProp, void*& OutMapContainer) -> bool
+    {
+        OutBindingObj = nullptr; OutMapProp = nullptr; OutMapContainer = nullptr;
+        FObjectProperty* BindingObjProp = CastField<FObjectProperty>(AnimNode->GetClass()->FindPropertyByName(TEXT("Binding")));
+        if (!BindingObjProp) return false;
+        UObject* BindingObj = BindingObjProp->GetObjectPropertyValue(BindingObjProp->ContainerPtrToValuePtr<void>(AnimNode));
+        if (!BindingObj) return false;
+        FMapProperty* MapProp = CastField<FMapProperty>(BindingObj->GetClass()->FindPropertyByName(TEXT("PropertyBindings")));
+        if (!MapProp) return false;
+        OutBindingObj = BindingObj;
+        OutMapProp = MapProp;
+        OutMapContainer = MapProp->ContainerPtrToValuePtr<void>(BindingObj);
+        return true;
+    };
+
+    // ── (B) Property binding add/replace ──
+    const TSharedPtr<FJsonObject>* BindingObj = nullptr;
+    if (Params->TryGetObjectField(TEXT("property_binding"), BindingObj) && BindingObj && BindingObj->IsValid())
+    {
+        const TSharedPtr<FJsonObject> Binding = *BindingObj;
+        FString PropName;
+        if (!Binding->TryGetStringField(TEXT("property_name"), PropName))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("property_binding requires 'property_name'"));
+
+        const TArray<TSharedPtr<FJsonValue>>* PathArr = nullptr;
+        if (!Binding->TryGetArrayField(TEXT("property_path"), PathArr) || PathArr->Num() == 0)
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("property_binding requires non-empty 'property_path' array"));
+
+        UObject* BindObjLocal = nullptr; FMapProperty* MapProp = nullptr; void* MapCont = nullptr;
+        if (!ResolveBindingMap(BindObjLocal, MapProp, MapCont))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Node has no Binding/PropertyBindings (older AnimGraphNode subclass?)"));
+
+        FScriptMapHelper MapHelper(MapProp, MapCont);
+
+        // Construct an FAnimGraphNodePropertyBinding instance, populate fields, then insert/replace.
+        UScriptStruct* BindStruct = FAnimGraphNodePropertyBinding::StaticStruct();
+        TArray<uint8> ScratchBuf;
+        ScratchBuf.SetNumZeroed(BindStruct->GetStructureSize());
+        BindStruct->InitializeStruct(ScratchBuf.GetData());
+        FAnimGraphNodePropertyBinding* NewBindData = reinterpret_cast<FAnimGraphNodePropertyBinding*>(ScratchBuf.GetData());
+
+        NewBindData->PropertyName = FName(*PropName);
+        TArray<FString>& OutPath = NewBindData->PropertyPath;
+        OutPath.Reset();
+        for (const TSharedPtr<FJsonValue>& V : *PathArr)
+        {
+            if (V.IsValid() && V->Type == EJson::String) OutPath.Add(V->AsString());
+        }
+        NewBindData->bIsBound = true;
+        NewBindData->Type = EAnimGraphNodePropertyBindingType::Property;
+
+        FString CtxId;
+        if (Binding->TryGetStringField(TEXT("context_id"), CtxId)) NewBindData->ContextId = FName(*CtxId);
+
+        FString TypeStr;
+        if (Binding->TryGetStringField(TEXT("type"), TypeStr))
+        {
+            if (TypeStr.Equals(TEXT("Function"), ESearchCase::IgnoreCase))
+                NewBindData->Type = EAnimGraphNodePropertyBindingType::Function;
+            else if (TypeStr.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+                NewBindData->Type = EAnimGraphNodePropertyBindingType::None;
+        }
+
+        // PathAsText defaults to FText::FromString(joined path) — keeps the binding's UI label sane.
+        NewBindData->PathAsText = FText::FromString(FString::Join(OutPath, TEXT(".")));
+
+        const FName Key = FName(*PropName);
+        FAnimGraphNodePropertyBinding* Existing = reinterpret_cast<FAnimGraphNodePropertyBinding*>(MapHelper.FindValueFromHash(&Key));
+        if (Existing)
+        {
+            // Move-assign to replace fields while preserving the map slot.
+            *Existing = *NewBindData;
+        }
+        else
+        {
+            MapHelper.AddPair(&Key, NewBindData);
+        }
+
+        BindStruct->DestroyStruct(ScratchBuf.GetData());
+        BindObjLocal->Modify();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("mode"), TEXT("binding_set"));
+        Entry->SetStringField(TEXT("property_name"), PropName);
+        Entry->SetBoolField(TEXT("ok"), true);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(Entry));
+        bAnyChange = true;
+    }
+
+    // ── (C) Binding remove ──
+    FString ClearName;
+    if (Params->TryGetStringField(TEXT("clear_binding"), ClearName))
+    {
+        UObject* BindObjLocal = nullptr; FMapProperty* MapProp = nullptr; void* MapCont = nullptr;
+        if (!ResolveBindingMap(BindObjLocal, MapProp, MapCont))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Node has no Binding/PropertyBindings"));
+        FScriptMapHelper MapHelper(MapProp, MapCont);
+        const FName Key = FName(*ClearName);
+        const bool bRemoved = MapHelper.RemovePair(&Key);
+        BindObjLocal->Modify();
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("mode"), TEXT("binding_clear"));
+        Entry->SetStringField(TEXT("property_name"), ClearName);
+        Entry->SetBoolField(TEXT("ok"), bRemoved);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(Entry));
+        bAnyChange = bAnyChange || bRemoved;
+    }
+
+    if (bAnyChange)
+    {
+        AnimNode->Modify();
+        AnimNode->ReconstructNode();
+        FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), bAnyChange || AppliedJson.Num() == 0);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("node_guid"), NodeGuid);
+    Result->SetStringField(TEXT("node_class"), AnimNode->GetClass()->GetName());
+    Result->SetArrayField(TEXT("applied"), AppliedJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddBlueprintFunctionGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, FunctionName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+
+    // Reject duplicates up-front so callers get a clear error instead of UE's auto-rename.
+    const FName DesiredName(*FunctionName);
+    for (UEdGraph* G : Blueprint->FunctionGraphs)
+    {
+        if (G && G->GetFName() == DesiredName)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Function '%s' already exists on blueprint %s"), *FunctionName, *BlueprintPath));
+        }
+    }
+
+    UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+        Blueprint,
+        DesiredName,
+        UEdGraph::StaticClass(),
+        UEdGraphSchema_K2::StaticClass());
+    if (!NewGraph)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("CreateNewGraph returned null"));
+
+    // AddFunctionGraph<UK2Node_FunctionEntry> wires up Entry/Result + the function category etc.
+    FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, /*bIsUserCreated=*/true, /*SignatureFromClass=*/nullptr);
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("function_name"), NewGraph->GetName());
+    Result->SetStringField(TEXT("graph_path"), NewGraph->GetPathName());
+    return Result;
 }

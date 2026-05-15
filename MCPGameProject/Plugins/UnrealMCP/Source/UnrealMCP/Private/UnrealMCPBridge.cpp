@@ -266,18 +266,21 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
             // Editor Commands (including actor manipulation)
-            else if (CommandType == TEXT("get_actors_in_level") || 
+            else if (CommandType == TEXT("get_actors_in_level") ||
                      CommandType == TEXT("find_actors_by_name") ||
                      CommandType == TEXT("spawn_actor") ||
                      CommandType == TEXT("create_actor") ||
-                     CommandType == TEXT("delete_actor") || 
+                     CommandType == TEXT("delete_actor") ||
                      CommandType == TEXT("set_actor_transform") ||
                      CommandType == TEXT("get_actor_properties") ||
                      CommandType == TEXT("set_actor_property") ||
                      CommandType == TEXT("spawn_blueprint_actor") ||
                      CommandType == TEXT("focus_viewport") ||
                      CommandType == TEXT("take_screenshot") ||
-                     CommandType == TEXT("get_static_mesh_info"))
+                     CommandType == TEXT("get_static_mesh_info") ||
+                     // Batch E: P1 asset persistence + deletion
+                     CommandType == TEXT("save_dirty_assets") ||
+                     CommandType == TEXT("delete_asset"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -296,7 +299,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_anim_state_graph") ||
                      CommandType == TEXT("get_anim_transition_graph") ||
                      CommandType == TEXT("get_component_properties") ||
-                     CommandType == TEXT("get_blueprint_cdo_properties"))
+                     CommandType == TEXT("get_blueprint_cdo_properties") ||
+                     // Batch E: P0/P1 blueprint write extensions
+                     CommandType == TEXT("create_blueprint_from_parent_blueprint") ||
+                     CommandType == TEXT("add_anim_graph_node") ||
+                     CommandType == TEXT("connect_anim_graph_nodes") ||
+                     CommandType == TEXT("set_anim_graph_node_property") ||
+                     CommandType == TEXT("add_blueprint_function_graph"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }
@@ -407,7 +416,15 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("remove_animation_notify") ||
                      CommandType == TEXT("set_animation_notify") ||
                      CommandType == TEXT("get_animation_notify_details") ||
-                     CommandType == TEXT("set_animation_notify_property"))
+                     CommandType == TEXT("set_animation_notify_property") ||
+                     // Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md
+                     CommandType == TEXT("create_anim_blueprint") ||
+                     CommandType == TEXT("connect_ik_rig_goal_to_solver") ||
+                     CommandType == TEXT("set_ik_rig_solver_field") ||
+                     CommandType == TEXT("delete_ik_rig_chain") ||
+                     CommandType == TEXT("delete_ik_rig_goal") ||
+                     CommandType == TEXT("delete_ik_rig_solver") ||
+                     CommandType == TEXT("update_ik_rig_chain"))
             {
                 ResultJson = AnimationCommands->HandleCommand(CommandType, Params);
             }

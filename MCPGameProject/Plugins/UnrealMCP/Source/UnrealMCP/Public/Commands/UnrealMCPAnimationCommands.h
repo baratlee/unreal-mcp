@@ -113,4 +113,15 @@ private:
     TSharedPtr<FJsonObject> HandleSetIKRetargeterChainMapping(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleIKRetargeterAutoMapChains(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetIKRetargeterRetargetPose(const TSharedPtr<FJsonObject>& Params);
+
+    // AnimBlueprint creation (Batch E: P0 from UnrealMCP_API_ExpansionRequest.md)
+    TSharedPtr<FJsonObject> HandleCreateAnimBlueprint(const TSharedPtr<FJsonObject>& Params);
+
+    // IK Rig write patches (Batch E: P1 from UnrealMCP_API_ExpansionRequest.md)
+    TSharedPtr<FJsonObject> HandleConnectIKRigGoalToSolver(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetIKRigSolverField(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDeleteIKRigChain(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDeleteIKRigGoal(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDeleteIKRigSolver(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleUpdateIKRigChain(const TSharedPtr<FJsonObject>& Params);
 };

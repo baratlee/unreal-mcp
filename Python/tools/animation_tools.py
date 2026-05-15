@@ -2609,4 +2609,208 @@ def register_animation_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": f"Error setting notify property: {e}"}
 
+    # ── Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md ──────────────
+
+    @mcp.tool()
+    def create_anim_blueprint(
+        ctx: Context,
+        asset_path: str,
+        target_skeleton: str = "",
+        parent_class: str = "",
+        preview_skeletal_mesh: str = "",
+        template: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a new empty AnimBlueprint asset.
+
+        Args:
+            asset_path:           e.g. "/Game/Animation/ABP_StoneGolem.ABP_StoneGolem"
+            target_skeleton:      Skeleton asset path. Required unless template=True.
+            parent_class:         Optional. Defaults to UAnimInstance. Accepts a class path
+                                  ("/Script/Engine.AnimInstance"), the GeneratedClass path
+                                  ("/Game/.../ABP_Foo.ABP_Foo_C"), or an AnimBP asset path
+                                  ("/Game/.../ABP_Foo.ABP_Foo" — resolved to its GeneratedClass).
+            preview_skeletal_mesh: Optional preview mesh asset path.
+            template:             True → create a skeleton-less AnimBlueprint template
+                                  (matches the editor's "Animation Layer Interface" / template flow).
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {"asset_path": asset_path, "template": template}
+            if target_skeleton:      params["target_skeleton"] = target_skeleton
+            if parent_class:          params["parent_class"] = parent_class
+            if preview_skeletal_mesh: params["preview_skeletal_mesh"] = preview_skeletal_mesh
+            response = unreal.send_command("create_anim_blueprint", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error creating anim blueprint: {e}"}
+
+    @mcp.tool()
+    def connect_ik_rig_goal_to_solver(
+        ctx: Context,
+        asset_path: str,
+        goal_name: str,
+        solver_index: int,
+    ) -> Dict[str, Any]:
+        """Register an existing Goal with a specific Solver (creates an Effector). Without this,
+        add_ik_rig_goal leaves the goal disconnected and editor warns "Goal not connected to any solvers"."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("connect_ik_rig_goal_to_solver", {
+                "asset_path": asset_path,
+                "goal_name": goal_name,
+                "solver_index": solver_index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error connecting goal to solver: {e}"}
+
+    @mcp.tool()
+    def set_ik_rig_solver_field(
+        ctx: Context,
+        asset_path: str,
+        solver_index: int,
+        field_path: str,
+        value: Union[str, int, float, bool],
+    ) -> Dict[str, Any]:
+        """Set a UPROPERTY on a Solver in the IK Rig's solver stack.
+
+        Args:
+            asset_path:   IK Rig asset path.
+            solver_index: Solver index in the stack (0-based).
+            field_path:   Dotted path within the solver struct (e.g. "RootBone", "Iterations",
+                          "GlobalSettings.MassMultiplier").
+            value:        Field value. Strings go through verbatim; ints/floats/bools are
+                          stringified — ImportText_Direct accepts text forms like "25",
+                          "0.5", "true", "(X=1, Y=2)", or "pelvis" (FName).
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            # Pydantic enforces wrapper-side types but the C++ takes text. Stringify here so
+            # callers can pass ints/floats/bools naturally (e.g. iterations=25 vs "25").
+            value_str = str(value).lower() if isinstance(value, bool) else str(value)
+            response = unreal.send_command("set_ik_rig_solver_field", {
+                "asset_path": asset_path,
+                "solver_index": solver_index,
+                "field_path": field_path,
+                "value": value_str,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting IK rig solver field: {e}"}
+
+    @mcp.tool()
+    def delete_ik_rig_chain(ctx: Context, asset_path: str, chain_name: str) -> Dict[str, Any]:
+        """Remove a retarget chain from an IK Rig. Useful for clearing chains that fail
+        IKRetargeter validation ("chain too short" when start==end on a single bone)."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("delete_ik_rig_chain", {
+                "asset_path": asset_path,
+                "chain_name": chain_name,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error deleting IK rig chain: {e}"}
+
+    @mcp.tool()
+    def delete_ik_rig_goal(ctx: Context, asset_path: str, goal_name: str) -> Dict[str, Any]:
+        """Remove a Goal from an IK Rig (also disconnects it from all solvers and clears
+        chain references via UIKRigController::RemoveGoal)."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("delete_ik_rig_goal", {
+                "asset_path": asset_path,
+                "goal_name": goal_name,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error deleting IK rig goal: {e}"}
+
+    @mcp.tool()
+    def delete_ik_rig_solver(ctx: Context, asset_path: str, solver_index: int) -> Dict[str, Any]:
+        """Remove a Solver from the IK Rig solver stack by index."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("delete_ik_rig_solver", {
+                "asset_path": asset_path,
+                "solver_index": solver_index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error deleting IK rig solver: {e}"}
+
+    @mcp.tool()
+    def update_ik_rig_chain(
+        ctx: Context,
+        asset_path: str,
+        chain_name: str,
+        start_bone: str = None,
+        end_bone: str = None,
+        goal_name: str = None,
+        new_chain_name: str = None,
+    ) -> Dict[str, Any]:
+        """Mutate an existing retarget chain. Any combination of fields can be passed; at least
+        one must be present. To clear the chain's goal pass goal_name="". Rename is applied last;
+        the returned chain_name reflects what the controller actually assigned (may be uniquified)."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {"asset_path": asset_path, "chain_name": chain_name}
+            if start_bone     is not None: params["start_bone"] = start_bone
+            if end_bone       is not None: params["end_bone"]   = end_bone
+            if goal_name      is not None: params["goal_name"]  = goal_name
+            if new_chain_name is not None: params["new_chain_name"] = new_chain_name
+            response = unreal.send_command("update_ik_rig_chain", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error updating IK rig chain: {e}"}
+
     logger.info("Animation tools registered successfully")

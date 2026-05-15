@@ -5,7 +5,7 @@ This module provides tools for creating and manipulating Blueprint assets in Unr
 """
 
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Union
 from mcp.server.fastmcp import FastMCP, Context
 
 # Get logger
@@ -664,5 +664,211 @@ def register_blueprint_tools(mcp: FastMCP):
             error_msg = f"Error getting blueprint function graph: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
+
+    # ── Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md ─────────────────
+
+    @mcp.tool()
+    def create_blueprint_from_parent_blueprint(
+        ctx: Context,
+        parent_blueprint_path: str,
+        new_asset_path: str,
+    ) -> Dict[str, Any]:
+        """Create a child blueprint whose parent is another BLUEPRINT (not a C++ class).
+
+        Mirrors the Content Browser's "Create Child Blueprint Class" action. Works for any
+        UBlueprint subclass — including UAnimBlueprint, where the resulting child preserves the
+        parent's FunctionGraphs/AnimGraph wiring.
+
+        Args:
+            parent_blueprint_path: e.g. "/Game/Kunlun/Pawn/BP_KLPawn_Human.BP_KLPawn_Human"
+            new_asset_path:        e.g. "/Game/Kunlun/Pawn/BP_KLPawn_StoneGolem.BP_KLPawn_StoneGolem"
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("create_blueprint_from_parent_blueprint", {
+                "parent_blueprint_path": parent_blueprint_path,
+                "new_asset_path": new_asset_path,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error creating child blueprint: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def add_anim_graph_node(
+        ctx: Context,
+        blueprint_path: str,
+        node_class: str,
+        graph_name: str = "AnimGraph",
+        node_position: List[float] = None,
+    ) -> Dict[str, Any]:
+        """Add a new UAnimGraphNode_* into an AnimBlueprint graph.
+
+        Args:
+            blueprint_path: AnimBlueprint asset path.
+            node_class:     Class name — bare ("AnimGraphNode_RetargetPoseFromMesh") or full
+                            ("/Script/AnimGraph.AnimGraphNode_RetargetPoseFromMesh"). Must be a
+                            UAnimGraphNode_Base subclass.
+            graph_name:     Graph name (defaults to "AnimGraph"). Pass "AnimGraph_StateMachine"
+                            etc. when targeting a sub-graph by name.
+            node_position:  [X, Y] in graph coordinates. Defaults to (0, 0).
+
+        Returns:
+            success, blueprint_path, graph_name, node_guid, node_class.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {
+                "blueprint_path": blueprint_path,
+                "node_class": node_class,
+                "graph_name": graph_name,
+            }
+            if node_position is not None:
+                params["node_position"] = [float(v) for v in node_position]
+            response = unreal.send_command("add_anim_graph_node", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error adding anim graph node: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def connect_anim_graph_nodes(
+        ctx: Context,
+        blueprint_path: str,
+        source_node_id: str,
+        source_pin: str,
+        target_node_id: str,
+        target_pin: str,
+    ) -> Dict[str, Any]:
+        """Connect two nodes inside an AnimGraph (or any sub-graph) by GUID + pin name.
+
+        Nodes are looked up across all graphs in the blueprint, so you don't have to specify the
+        graph — but both nodes must live in the same graph. Returns the resolved graph name.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("connect_anim_graph_nodes", {
+                "blueprint_path": blueprint_path,
+                "source_node_id": source_node_id,
+                "source_pin": source_pin,
+                "target_node_id": target_node_id,
+                "target_pin": target_pin,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error connecting anim graph nodes: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def set_anim_graph_node_property(
+        ctx: Context,
+        blueprint_path: str,
+        node_guid: str,
+        field_path: str = None,
+        value: Union[str, int, float, bool] = None,
+        property_binding: Dict[str, Any] = None,
+        clear_binding: str = None,
+    ) -> Dict[str, Any]:
+        """Set a field or property binding on an AnimGraph node. Three modes (combinable):
+
+        - field_path + value: write to the inner FAnimNode_* struct first (anim_node_properties
+          domain — e.g. "iKRetargeterAsset", "retargetFrom"), falling back to the editor-side
+          UAnimGraphNode_* UPROPERTY (node_object_properties). Value is text in the same form
+          UE accepts in T3D (ImportText_Direct semantics).
+        - property_binding={
+              "property_name": "<inner struct member>",  # e.g. "SourceMeshComponent"
+              "property_path": ["LeaderMeshComponent"],   # AnimInstance variable name(s)
+              "context_id": "...",                        # optional FName
+              "type": "Property" | "Function" | "None"    # optional, defaults to Property
+          }: add/replace an entry in Binding->PropertyBindings. This is what the editor writes
+          when you drag-bind a pin to an AnimInstance variable in the Details panel.
+        - clear_binding="<property_name>": remove a binding entry by key.
+
+        Modes execute in (field) → (binding_set) → (binding_clear) order.
+
+        Returns: success, blueprint_path, node_guid, node_class, applied (per-mode log).
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {
+                "blueprint_path": blueprint_path,
+                "node_guid": node_guid,
+            }
+            if field_path is not None and value is not None:
+                params["field_path"] = field_path
+                # ImportText_Direct takes text; stringify ints/floats/bools so callers can
+                # pass natural Python types (iterations=25, enabled=True) instead of "25" / "true".
+                params["value"] = str(value).lower() if isinstance(value, bool) else str(value)
+            if property_binding is not None:
+                params["property_binding"] = property_binding
+            if clear_binding is not None:
+                params["clear_binding"] = clear_binding
+            response = unreal.send_command("set_anim_graph_node_property", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error setting anim graph node property: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def add_blueprint_function_graph(
+        ctx: Context,
+        blueprint_path: str,
+        function_name: str,
+    ) -> Dict[str, Any]:
+        """Create a new user function graph on a blueprint (with Entry + Result nodes auto-wired).
+
+        Use this to add the kind of independent function you'd call from BeginPlay — e.g. an "Init"
+        helper. To add nodes inside the new graph use add_blueprint_function_node / connect_blueprint_nodes.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_function_graph", {
+                "blueprint_path": blueprint_path,
+                "function_name": function_name,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error adding blueprint function graph: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
 
     logger.info("Blueprint tools registered successfully")

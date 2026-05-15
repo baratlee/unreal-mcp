@@ -1,10 +1,10 @@
 # UnrealMCP Tool List
 
-> 103 tools total, organized by category.
+> 117 tools total, organized by category.
 
 ---
 
-## Editor Tools (8)
+## Editor Tools (10)
 
 | Tool | Description |
 |---|---|
@@ -16,12 +16,15 @@
 | `get_actor_properties` | 获取 Actor 的所有属性 |
 | `set_actor_property` | 设置 Actor 上的指定属性 |
 | `spawn_blueprint_actor` | 从 Blueprint 资产生成 Actor 实例 |
+| `save_dirty_assets` | 把内存中 dirty 的非 Map 包写回磁盘（可选 asset_paths 精确指定，否则全量扫） |
+| `delete_asset` | 从 Content Browser 删除资产（默认拒绝有引用的；force=true 走 DeleteLoadedAsset） |
 
-## Blueprint Tools (11)
+## Blueprint Tools (16)
 
 | Tool | Description |
 |---|---|
-| `create_blueprint` | 创建新 Blueprint 类 |
+| `create_blueprint` | 创建新 Blueprint 类（父类为 C++ 类） |
+| `create_blueprint_from_parent_blueprint` | 创建子蓝图，父类为另一个 BLUEPRINT（含 AnimBlueprint） |
 | `add_component_to_blueprint` | 为 Blueprint 添加组件 |
 | `set_component_property` | 设置 Blueprint 中组件的属性 |
 | `get_component_properties` | 读取 BP 组件的所有属性（含继承组件 + 嵌套子对象递归展开） |
@@ -32,6 +35,10 @@
 | `compile_blueprint` | 编译 Blueprint |
 | `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
 | `get_blueprint_function_graph` | 展开单个函数/AnimGraph 的完整节点图（支持 `pin_payload_mode` 控制响应体积） |
+| `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
+| `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |
+| `connect_anim_graph_nodes` | 跨所有图按 GUID 找节点 + 按 pin 名连接（要求源/目标在同一图） |
+| `set_anim_graph_node_property` | AnimGraph 节点 setter：field_path/value、property_binding (TMap 写入)、clear_binding 三模式可组合 |
 
 ## Blueprint Node Tools (8)
 
@@ -63,7 +70,7 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (16)
+## Animation Tools (17)
 
 | Tool | Description |
 |---|---|
@@ -82,6 +89,7 @@
 | `get_physics_asset_info` | 读取 UPhysicsAsset 结构：Bodies（含图元数统计）+ Constraints（含 limit 值） |
 | `get_asset_references` | 反向依赖查询：列出引用指定资产的所有资产（AssetRegistry） |
 | `set_animation_properties` | 设置 AnimSequence 的 Root Motion 属性（enable/root_lock/force_lock/normalized_scale） |
+| `create_anim_blueprint` | 新建 UAnimBlueprint 资产（target_skeleton + 可选 parent_class / preview_mesh / template 模板模式） |
 | `list_chooser_tables` | 通过 Asset Registry 列出项目中所有 UChooserTable 资产 |
 
 ## Chooser Table Tools (12)
@@ -101,7 +109,7 @@
 | `set_chooser_table_row_column_value` | 按 row_index+column_index 设单元格（T3D 文本值，走 ImportText_Direct） |
 | `remove_chooser_table_row` | 按 index 移除行（同步移除所有列的行值） |
 
-## IK Tools (17)
+## IK Tools (23)
 
 | Tool | Description |
 |---|---|
@@ -114,6 +122,12 @@
 | `add_ik_rig_retarget_chain` | 添加 retarget chain（name + start/end bone + 可选 goal） |
 | `add_ik_rig_goal` | 添加 IK Goal（name + 绑定骨骼） |
 | `add_ik_rig_solver` | 向 solver 栈末尾追加 solver（支持全路径或裸 struct 名） |
+| `connect_ik_rig_goal_to_solver` | 把 Goal 注册到指定 Solver（消除"Goal not connected to any solvers"警告） |
+| `set_ik_rig_solver_field` | Solver 字段反射 setter（按点分路径 + ImportText_Direct） |
+| `delete_ik_rig_chain` | 删 retarget chain（单骨 chain 触发 RTG "chain too short" 时用这个清理） |
+| `delete_ik_rig_goal` | 删 Goal（自动断开所有 solver + 清 chain 引用） |
+| `delete_ik_rig_solver` | 按索引删 Solver |
+| `update_ik_rig_chain` | 一次性改 retarget chain 的 start/end/goal/new_name（至少传一个字段） |
 | `create_ik_retargeter` | 新建 UIKRetargeter 资产，可选传入 source/target IKRig 自动装配 |
 | `set_ik_retargeter_op_enabled` | 启/停 retarget op |
 | `set_ik_retargeter_op_field` | 通用反射 setter：按点分路径设 op 任意字段（用 UE T3D 文本格式） |

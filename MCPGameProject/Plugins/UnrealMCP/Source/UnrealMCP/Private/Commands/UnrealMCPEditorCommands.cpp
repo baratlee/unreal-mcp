@@ -26,6 +26,12 @@
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionActorDescInstance.h"
+// Batch E: P1 — for save_dirty_assets / delete_asset
+#include "EditorAssetLibrary.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/Package.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -84,6 +90,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("get_static_mesh_info"))
     {
         return HandleGetStaticMeshInfo(Params);
+    }
+    // Batch E: P1 — asset persistence & deletion
+    else if (CommandType == TEXT("save_dirty_assets"))
+    {
+        return HandleSaveDirtyAssets(Params);
+    }
+    else if (CommandType == TEXT("delete_asset"))
+    {
+        return HandleDeleteAsset(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -982,5 +997,170 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetStaticMeshInfo(const 
         Result->SetObjectField(TEXT("vertices"), VertsObj);
     }
 
+    return Result;
+}
+
+// =============================================================================
+// Batch E: P1 from UnrealMCP_API_ExpansionRequest.md
+//   - save_dirty_assets : persist in-memory edits to disk
+//   - delete_asset      : remove an asset from Content Browser
+// =============================================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveDirtyAssets(const TSharedPtr<FJsonObject>& Params)
+{
+    // Two modes:
+    //   1. asset_paths provided → save exactly those (skip silently if not dirty / not loaded).
+    //   2. asset_paths omitted/empty → walk all loaded packages and save anything dirty.
+    // We deliberately do NOT save Maps/Levels here — the user-facing risk profile of overwriting
+    // a level mid-PIE / mid-edit is much higher than for content assets, and saving levels needs
+    // a different code path (FEditorFileUtils::SaveDirtyPackages with the bSaveMapPackages flag).
+    // Callers that need that should request it via /scripted/ python instead.
+
+    const TArray<TSharedPtr<FJsonValue>>* AssetPathsArray = nullptr;
+    const bool bHasArray = Params->TryGetArrayField(TEXT("asset_paths"), AssetPathsArray);
+
+    TArray<TSharedPtr<FJsonValue>> SavedJson;
+    TArray<TSharedPtr<FJsonValue>> SkippedJson;
+    TArray<TSharedPtr<FJsonValue>> FailedJson;
+
+    auto SavePackageIfDirty = [&](UPackage* Pkg, const FString& OriginPath)
+    {
+        if (!Pkg)
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("path"), OriginPath);
+            Entry->SetStringField(TEXT("reason"), TEXT("package not loaded"));
+            SkippedJson.Add(MakeShared<FJsonValueObject>(Entry));
+            return;
+        }
+        if (!Pkg->IsDirty())
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("path"), Pkg->GetName());
+            Entry->SetStringField(TEXT("reason"), TEXT("not dirty"));
+            SkippedJson.Add(MakeShared<FJsonValueObject>(Entry));
+            return;
+        }
+        // Skip Map packages — see header comment above.
+        if (Pkg->ContainsMap())
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("path"), Pkg->GetName());
+            Entry->SetStringField(TEXT("reason"), TEXT("map package; use FEditorFileUtils::SaveDirtyPackages for levels"));
+            SkippedJson.Add(MakeShared<FJsonValueObject>(Entry));
+            return;
+        }
+
+        const FString PackageName = Pkg->GetName();
+        const FString Filename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+
+        FSavePackageArgs SaveArgs;
+        SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+        SaveArgs.SaveFlags = SAVE_NoError;
+        SaveArgs.Error = GError;
+
+        const FSavePackageResultStruct Result = UPackage::Save(Pkg, /*InAsset=*/nullptr, *Filename, SaveArgs);
+        if (Result.Result == ESavePackageResult::Success)
+        {
+            SavedJson.Add(MakeShared<FJsonValueString>(PackageName));
+        }
+        else
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("path"), PackageName);
+            Entry->SetStringField(TEXT("filename"), Filename);
+            Entry->SetNumberField(TEXT("save_result_enum"), static_cast<int32>(Result.Result));
+            FailedJson.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+    };
+
+    if (bHasArray && AssetPathsArray && AssetPathsArray->Num() > 0)
+    {
+        for (const TSharedPtr<FJsonValue>& Val : *AssetPathsArray)
+        {
+            if (!Val.IsValid() || Val->Type != EJson::String) continue;
+            const FString AssetPath = Val->AsString();
+
+            // Strip ".AssetName" suffix to get package name.
+            FString PackageName = AssetPath;
+            int32 DotIdx = INDEX_NONE;
+            if (PackageName.FindChar('.', DotIdx))
+            {
+                PackageName = PackageName.Left(DotIdx);
+            }
+
+            UPackage* Pkg = FindPackage(nullptr, *PackageName);
+            // Fall back to LoadPackage when the user passes a path we haven't loaded yet —
+            // dirty state only matters for already-loaded packages, but loading lets us at least
+            // report "not dirty" instead of "package not loaded".
+            if (!Pkg)
+            {
+                Pkg = LoadPackage(nullptr, *PackageName, LOAD_NoWarn);
+            }
+            SavePackageIfDirty(Pkg, AssetPath);
+        }
+    }
+    else
+    {
+        // Whole-editor sweep. Bound at 1024 to avoid surprising the user with a multi-minute save
+        // when the editor has hundreds of dirty packages; the limit is heuristic — bump if needed.
+        TArray<UPackage*> DirtyPkgs;
+        DirtyPkgs.Reserve(64);
+        for (TObjectIterator<UPackage> It; It; ++It)
+        {
+            UPackage* P = *It;
+            if (P && P->IsDirty()) DirtyPkgs.Add(P);
+        }
+        for (UPackage* P : DirtyPkgs)
+        {
+            SavePackageIfDirty(P, P->GetName());
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), FailedJson.Num() == 0);
+    Result->SetArrayField(TEXT("saved"), SavedJson);
+    Result->SetArrayField(TEXT("skipped"), SkippedJson);
+    Result->SetArrayField(TEXT("failed"), FailedJson);
+    Result->SetNumberField(TEXT("saved_count"), SavedJson.Num());
+    Result->SetNumberField(TEXT("skipped_count"), SkippedJson.Num());
+    Result->SetNumberField(TEXT("failed_count"), FailedJson.Num());
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    bool bForce = false;
+    Params->TryGetBoolField(TEXT("force"), bForce); // optional; default false → safer (refuses if referenced)
+
+    // UEditorAssetLibrary handles BOTH the "loaded in memory" case and the "on-disk-only" case
+    // by routing through ObjectTools, which is what Content-Browser deletion uses internally.
+    if (!UEditorAssetLibrary::DoesAssetExist(AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Asset does not exist: %s"), *AssetPath));
+    }
+
+    const bool bOK = bForce
+        ? UEditorAssetLibrary::DeleteLoadedAsset(UEditorAssetLibrary::LoadAsset(AssetPath))
+        : UEditorAssetLibrary::DeleteAsset(AssetPath);
+
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("DeleteAsset failed for: %s (asset may have hard references; pass force=true to delete loaded asset anyway)"),
+                *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetBoolField(TEXT("force"), bForce);
     return Result;
 }

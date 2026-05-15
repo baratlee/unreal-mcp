@@ -33,6 +33,13 @@ private:
     TSharedPtr<FJsonObject> HandleGetComponentProperties(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetBlueprintCDOProperties(const TSharedPtr<FJsonObject>& Params);
 
+    // Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md
+    TSharedPtr<FJsonObject> HandleCreateBlueprintFromParentBlueprint(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddAnimGraphNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleConnectAnimGraphNodes(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetAnimGraphNodeProperty(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintFunctionGraph(const TSharedPtr<FJsonObject>& Params);
+
     // Helper functions
     UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName, FString& OutSource);
     void SerializePropertiesToJson(UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray, int32 Depth);

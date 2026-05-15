@@ -12,6 +12,7 @@
 #include "Animation/Skeleton.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimInstance.h"
+#include "Factories/AnimBlueprintFactory.h" // Batch E: create_anim_blueprint
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "AnimationBlueprintLibrary.h"
@@ -396,6 +397,35 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("set_chooser_table_row_column_value"))
     {
         return HandleSetChooserTableRowColumnValue(Params);
+    }
+    // Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md
+    if (CommandType == TEXT("create_anim_blueprint"))
+    {
+        return HandleCreateAnimBlueprint(Params);
+    }
+    if (CommandType == TEXT("connect_ik_rig_goal_to_solver"))
+    {
+        return HandleConnectIKRigGoalToSolver(Params);
+    }
+    if (CommandType == TEXT("set_ik_rig_solver_field"))
+    {
+        return HandleSetIKRigSolverField(Params);
+    }
+    if (CommandType == TEXT("delete_ik_rig_chain"))
+    {
+        return HandleDeleteIKRigChain(Params);
+    }
+    if (CommandType == TEXT("delete_ik_rig_goal"))
+    {
+        return HandleDeleteIKRigGoal(Params);
+    }
+    if (CommandType == TEXT("delete_ik_rig_solver"))
+    {
+        return HandleDeleteIKRigSolver(Params);
+    }
+    if (CommandType == TEXT("update_ik_rig_chain"))
+    {
+        return HandleUpdateIKRigChain(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown animation command: %s"), *CommandType));
@@ -7277,5 +7307,379 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIMCMappingTrigger(
     Result->SetNumberField(TEXT("mapping_index"), MappingIndex);
     Result->SetNumberField(TEXT("trigger_index"), TriggerIndex);
     Result->SetStringField(TEXT("trigger_class"), Trig->GetClass()->GetName());
+    return Result;
+}
+
+// =============================================================================
+// Batch E (Docs/UnrealMCP_API_ExpansionRequest.md): AnimBP creation + IK Rig patches
+// =============================================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateAnimBlueprint(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    // target_skeleton is required unless template==true (mirrors editor's "Create AnimBP" wizard).
+    FString TargetSkeletonPath;
+    bool bTemplate = false;
+    Params->TryGetStringField(TEXT("target_skeleton"), TargetSkeletonPath);
+    Params->TryGetBoolField(TEXT("template"), bTemplate);
+
+    if (!bTemplate && TargetSkeletonPath.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Missing 'target_skeleton' (required unless template=true)"));
+    }
+
+    FString ParentClassPath;
+    Params->TryGetStringField(TEXT("parent_class"), ParentClassPath); // optional → defaults to UAnimInstance
+
+    FString PreviewMeshPath;
+    Params->TryGetStringField(TEXT("preview_skeletal_mesh"), PreviewMeshPath); // optional
+
+    // Split asset path into (package_name, asset_name).
+    FString PackageName = AssetPath;
+    int32 DotIdx = INDEX_NONE;
+    if (PackageName.FindChar('.', DotIdx)) PackageName = PackageName.Left(DotIdx);
+    int32 SlashIdx = INDEX_NONE;
+    if (!PackageName.FindLastChar('/', SlashIdx) || SlashIdx + 1 >= PackageName.Len())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid asset_path: %s"), *AssetPath));
+    }
+    const FString AssetName = PackageName.Mid(SlashIdx + 1);
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UAnimBlueprint>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("AnimBlueprint already exists: %s"), *AssetPath));
+        }
+    }
+
+    USkeleton* TargetSkeleton = nullptr;
+    if (!TargetSkeletonPath.IsEmpty())
+    {
+        TargetSkeleton = LoadObject<USkeleton>(nullptr, *TargetSkeletonPath);
+        if (!TargetSkeleton)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("target_skeleton not found: %s"), *TargetSkeletonPath));
+        }
+    }
+
+    UClass* ParentClass = UAnimInstance::StaticClass();
+    if (!ParentClassPath.IsEmpty())
+    {
+        // Accept both "/Script/Engine.AnimInstance" form and a generated-class path like
+        // "/Game/AnimBPs/ABP_Base.ABP_Base_C". For the latter we LoadClass<UAnimInstance>.
+        UClass* Loaded = LoadClass<UAnimInstance>(nullptr, *ParentClassPath);
+        if (!Loaded)
+        {
+            // Allow passing the AnimBP asset path; resolve to its GeneratedClass.
+            if (UAnimBlueprint* ParentBP = LoadObject<UAnimBlueprint>(nullptr, *ParentClassPath))
+            {
+                Loaded = Cast<UClass>(ParentBP->GeneratedClass);
+            }
+        }
+        if (!Loaded)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("parent_class not found (must derive from UAnimInstance): %s"), *ParentClassPath));
+        }
+        ParentClass = Loaded;
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+    }
+    Package->FullyLoad();
+
+    UAnimBlueprintFactory* Factory = NewObject<UAnimBlueprintFactory>();
+    Factory->ParentClass = ParentClass;
+    Factory->TargetSkeleton = TargetSkeleton; // may be null when bTemplate
+    Factory->bTemplate = bTemplate;
+    Factory->BlueprintType = BPTYPE_Normal;
+
+    if (!PreviewMeshPath.IsEmpty())
+    {
+        if (USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *PreviewMeshPath))
+        {
+            Factory->PreviewSkeletalMesh = Mesh;
+        }
+        // intentional: don't fail on missing preview mesh — it's purely editor-time scaffolding.
+    }
+
+    UAnimBlueprint* NewAnimBP = Cast<UAnimBlueprint>(
+        Factory->FactoryCreateNew(UAnimBlueprint::StaticClass(), Package, *AssetName, RF_Public | RF_Standalone, nullptr, GWarn));
+    if (!NewAnimBP)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("UAnimBlueprintFactory::FactoryCreateNew returned null"));
+    }
+
+    FAssetRegistryModule::AssetCreated(NewAnimBP);
+    Package->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewAnimBP->GetPathName());
+    Result->SetStringField(TEXT("parent_class"), ParentClass->GetPathName());
+    Result->SetStringField(TEXT("target_skeleton"), TargetSkeleton ? TargetSkeleton->GetPathName() : FString());
+    Result->SetBoolField(TEXT("is_template"), bTemplate);
+    Result->SetBoolField(TEXT("saved"), false); // caller must call save_dirty_assets to persist
+    return Result;
+}
+
+// ---- IK Rig write patches -----------------------------------------------------
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleConnectIKRigGoalToSolver(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, GoalName;
+    int32 SolverIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("goal_name"), GoalName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'goal_name' parameter"));
+    if (!Params->TryGetNumberField(TEXT("solver_index"), SolverIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'solver_index' parameter"));
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const bool bOK = Ctrl->ConnectGoalToSolver(FName(*GoalName), SolverIndex);
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("ConnectGoalToSolver failed (goal not found, solver_index out of range, or already connected): goal=%s solver_index=%d"),
+                *GoalName, SolverIndex));
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetStringField(TEXT("goal_name"), GoalName);
+    Result->SetNumberField(TEXT("solver_index"), SolverIndex);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRigSolverField(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, FieldPath, Value;
+    int32 SolverIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("solver_index"), SolverIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'solver_index' parameter"));
+    if (!Params->TryGetStringField(TEXT("field_path"), FieldPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'field_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("value"), Value))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter (text form, same as ImportText_Direct)"));
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    FInstancedStruct* SolverStruct = Ctrl->GetSolverStructAtIndex(SolverIndex);
+    if (!SolverStruct || !SolverStruct->IsValid())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Solver not found at index %d"), SolverIndex));
+    }
+
+    const UScriptStruct* SolverType = SolverStruct->GetScriptStruct();
+    void* SolverMemory = SolverStruct->GetMutableMemory();
+
+    FProperty* Prop = nullptr;
+    void* ValuePtr = nullptr;
+    FString PathErr;
+    if (!ResolveStructFieldPath(SolverType, SolverMemory, FieldPath, Prop, ValuePtr, PathErr))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(PathErr);
+    }
+
+    const TCHAR* ImportResult = Prop->ImportText_Direct(*Value, ValuePtr, /*OwnerObject=*/nullptr, PPF_None, GLog);
+    if (!ImportResult)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("ImportText_Direct failed for field '%s' (value='%s', expected text-form for type %s)"),
+                *FieldPath, *Value, *Prop->GetCPPType()));
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+    Out->SetBoolField(TEXT("success"), true);
+    Out->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Out->SetNumberField(TEXT("solver_index"), SolverIndex);
+    Out->SetStringField(TEXT("field_path"), FieldPath);
+    Out->SetStringField(TEXT("solver_struct"), SolverType->GetName());
+    return Out;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigChain(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ChainName;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("chain_name"), ChainName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'chain_name' parameter"));
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const bool bOK = Ctrl->RemoveRetargetChain(FName(*ChainName));
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("RemoveRetargetChain failed (chain may not exist): %s"), *ChainName));
+    }
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetStringField(TEXT("chain_name"), ChainName);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigGoal(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, GoalName;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("goal_name"), GoalName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'goal_name' parameter"));
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const bool bOK = Ctrl->RemoveGoal(FName(*GoalName));
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("RemoveGoal failed (goal may not exist): %s"), *GoalName));
+    }
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetStringField(TEXT("goal_name"), GoalName);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigSolver(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    int32 SolverIndex = INDEX_NONE;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetNumberField(TEXT("solver_index"), SolverIndex))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'solver_index' parameter"));
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    const bool bOK = Ctrl->RemoveSolver(SolverIndex);
+    if (!bOK)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("RemoveSolver failed (index out of range): solver_index=%d"), SolverIndex));
+    }
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetNumberField(TEXT("solver_index"), SolverIndex);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleUpdateIKRigChain(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath, ChainName;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("chain_name"), ChainName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'chain_name' parameter"));
+
+    FString StartBone, EndBone, GoalName, NewName;
+    const bool bHasStart = Params->TryGetStringField(TEXT("start_bone"), StartBone);
+    const bool bHasEnd   = Params->TryGetStringField(TEXT("end_bone"), EndBone);
+    const bool bHasGoal  = Params->TryGetStringField(TEXT("goal_name"), GoalName);
+    const bool bHasRename = Params->TryGetStringField(TEXT("new_chain_name"), NewName);
+
+    if (!bHasStart && !bHasEnd && !bHasGoal && !bHasRename)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("update_ik_rig_chain: at least one of start_bone / end_bone / goal_name / new_chain_name must be provided"));
+    }
+
+    FString Err;
+    UIKRigController* Ctrl = GetIKRigControllerForPath(AssetPath, Err);
+    if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+    TArray<TSharedPtr<FJsonValue>> AppliedJson;
+    FName CurrentChainName = FName(*ChainName);
+
+    if (bHasStart)
+    {
+        const bool bOK = Ctrl->SetRetargetChainStartBone(CurrentChainName, FName(*StartBone));
+        TSharedPtr<FJsonObject> E = MakeShared<FJsonObject>();
+        E->SetStringField(TEXT("field"), TEXT("start_bone"));
+        E->SetStringField(TEXT("value"), StartBone);
+        E->SetBoolField(TEXT("ok"), bOK);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(E));
+    }
+    if (bHasEnd)
+    {
+        const bool bOK = Ctrl->SetRetargetChainEndBone(CurrentChainName, FName(*EndBone));
+        TSharedPtr<FJsonObject> E = MakeShared<FJsonObject>();
+        E->SetStringField(TEXT("field"), TEXT("end_bone"));
+        E->SetStringField(TEXT("value"), EndBone);
+        E->SetBoolField(TEXT("ok"), bOK);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(E));
+    }
+    if (bHasGoal)
+    {
+        const bool bOK = Ctrl->SetRetargetChainGoal(CurrentChainName, GoalName.IsEmpty() ? NAME_None : FName(*GoalName));
+        TSharedPtr<FJsonObject> E = MakeShared<FJsonObject>();
+        E->SetStringField(TEXT("field"), TEXT("goal_name"));
+        E->SetStringField(TEXT("value"), GoalName);
+        E->SetBoolField(TEXT("ok"), bOK);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(E));
+    }
+    FString FinalName = ChainName;
+    if (bHasRename)
+    {
+        const FName Renamed = Ctrl->RenameRetargetChain(CurrentChainName, FName(*NewName));
+        const bool bOK = !Renamed.IsNone() && Renamed != CurrentChainName;
+        TSharedPtr<FJsonObject> E = MakeShared<FJsonObject>();
+        E->SetStringField(TEXT("field"), TEXT("new_chain_name"));
+        E->SetStringField(TEXT("value"), NewName);
+        E->SetStringField(TEXT("applied_name"), Renamed.ToString());
+        E->SetBoolField(TEXT("ok"), bOK);
+        AppliedJson.Add(MakeShared<FJsonValueObject>(E));
+        if (bOK) FinalName = Renamed.ToString();
+    }
+
+    Ctrl->GetAsset()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
+    Result->SetStringField(TEXT("chain_name"), FinalName);
+    Result->SetArrayField(TEXT("applied"), AppliedJson);
     return Result;
 }

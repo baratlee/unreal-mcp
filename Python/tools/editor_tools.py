@@ -367,10 +367,76 @@ def register_editor_tools(mcp: FastMCP):
             
             logger.info(f"Spawn blueprint actor response: {response}")
             return response
-            
+
         except Exception as e:
             error_msg = f"Error spawning blueprint actor: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
+
+    # ── Batch E: P1 from UnrealMCP_API_ExpansionRequest.md ──────────────────
+    # save_dirty_assets / delete_asset close the "edit → persist → cleanup" loop
+    # so multi-step asset edits can run unattended without a manual Ctrl+S pass.
+
+    @mcp.tool()
+    def save_dirty_assets(ctx: Context, asset_paths: List[str] = None) -> Dict[str, Any]:
+        """Save dirty content packages to disk. Skips Map/Level packages by design.
+
+        Args:
+            asset_paths: Optional list of asset paths ("/Game/Foo/Bar.Bar" or "/Game/Foo/Bar").
+                When omitted/empty, sweeps every loaded UPackage and saves any that is dirty.
+                Pass an explicit list when you only want to persist what you just edited —
+                much faster than a whole-editor sweep on a big project.
+
+        Returns:
+            success, saved (list of package names), skipped (list of {path, reason}),
+            failed (list of {path, save_result_enum}), and counts. success is true only
+            when failed is empty; skipped entries are not failures.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {}
+            if asset_paths:
+                params["asset_paths"] = asset_paths
+            response = unreal.send_command("save_dirty_assets", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error saving dirty assets: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def delete_asset(ctx: Context, asset_path: str, force: bool = False) -> Dict[str, Any]:
+        """Delete an asset from the Content Browser. The asset is removed from disk + asset registry.
+
+        Args:
+            asset_path: Asset to delete (e.g. "/Game/Foo/Bar.Bar" or "/Game/Foo/Bar").
+            force: When true, deletes even loaded assets via DeleteLoadedAsset. When false (default),
+                refuses if the asset has hard references — safer for collaborative projects.
+
+        Returns:
+            success, asset_path, force.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("delete_asset", {"asset_path": asset_path, "force": force})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error deleting asset: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
 
     logger.info("Editor tools registered successfully")
