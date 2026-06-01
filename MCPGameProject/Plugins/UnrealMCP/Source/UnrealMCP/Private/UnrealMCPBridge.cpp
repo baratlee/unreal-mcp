@@ -61,6 +61,7 @@
 #include "Commands/UnrealMCPAnimationCommands.h"
 #include "Commands/UnrealMCPStateTreeCommands.h"
 #include "Commands/UnrealMCPMaterialCommands.h"
+#include "Commands/UnrealMCPSplineCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -110,6 +111,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     StateTreeCommands = MakeShared<FUnrealMCPStateTreeCommands>();
     DataAssetCommands = MakeShared<FUnrealMCPDataAssetCommands>();
     MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
+    SplineCommands = MakeShared<FUnrealMCPSplineCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -123,6 +125,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     StateTreeCommands.Reset();
     DataAssetCommands.Reset();
     MaterialCommands.Reset();
+    SplineCommands.Reset();
 }
 
 // Initialize subsystem
@@ -459,6 +462,14 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_material_graph"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
+            }
+            // Spline Commands (LT9 P0, 2026-06-01)
+            else if (CommandType == TEXT("get_spline_info") ||
+                     CommandType == TEXT("set_spline_points") ||
+                     CommandType == TEXT("set_spline_point") ||
+                     CommandType == TEXT("clear_spline_points"))
+            {
+                ResultJson = SplineCommands->HandleCommand(CommandType, Params);
             }
             else
             {

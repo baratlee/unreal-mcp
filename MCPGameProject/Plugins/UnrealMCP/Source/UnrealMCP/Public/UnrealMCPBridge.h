@@ -17,6 +17,7 @@
 #include "Commands/UnrealMCPStateTreeCommands.h"
 #include "Commands/UnrealMCPDataAssetCommands.h"
 #include "Commands/UnrealMCPMaterialCommands.h"
+#include "Commands/UnrealMCPSplineCommands.h"
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -69,4 +70,5 @@ private:
 	TSharedPtr<FUnrealMCPStateTreeCommands> StateTreeCommands;
 	TSharedPtr<FUnrealMCPDataAssetCommands> DataAssetCommands;
 	TSharedPtr<FUnrealMCPMaterialCommands> MaterialCommands;
+	TSharedPtr<FUnrealMCPSplineCommands> SplineCommands;
 };

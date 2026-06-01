@@ -278,6 +278,7 @@ from tools.mesh_tools import register_mesh_tools
 from tools.statetree_tools import register_statetree_tools
 from tools.data_asset_tools import register_data_asset_tools
 from tools.material_tools import register_material_tools
+from tools.spline_tools import register_spline_tools
 
 # Register tools
 register_editor_tools(mcp)
@@ -291,6 +292,7 @@ register_mesh_tools(mcp)
 register_statetree_tools(mcp)
 register_data_asset_tools(mcp)
 register_material_tools(mcp)
+register_spline_tools(mcp)
 
 @mcp.prompt()
 def info():
