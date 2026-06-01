@@ -60,6 +60,7 @@
 #include "Commands/UnrealMCPUMGCommands.h"
 #include "Commands/UnrealMCPAnimationCommands.h"
 #include "Commands/UnrealMCPStateTreeCommands.h"
+#include "Commands/UnrealMCPMaterialCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -108,6 +109,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     AnimationCommands = MakeShared<FUnrealMCPAnimationCommands>();
     StateTreeCommands = MakeShared<FUnrealMCPStateTreeCommands>();
     DataAssetCommands = MakeShared<FUnrealMCPDataAssetCommands>();
+    MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -120,6 +122,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     AnimationCommands.Reset();
     StateTreeCommands.Reset();
     DataAssetCommands.Reset();
+    MaterialCommands.Reset();
 }
 
 // Initialize subsystem
@@ -448,6 +451,14 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("list_data_assets"))
             {
                 ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
+            }
+            // Material Commands (P0 2026-05-22: read-only inspection; P1 2026-05-22: graph traversal)
+            else if (CommandType == TEXT("get_material_info") ||
+                     CommandType == TEXT("get_material_instance_info") ||
+                     CommandType == TEXT("get_material_parameter_collection_info") ||
+                     CommandType == TEXT("get_material_graph"))
+            {
+                ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }
             else
             {

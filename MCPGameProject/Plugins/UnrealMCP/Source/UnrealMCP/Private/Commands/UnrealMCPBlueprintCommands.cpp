@@ -449,73 +449,126 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Check if blueprint already exists
-    FString PackagePath = TEXT("/Game/Blueprints/");
-    FString AssetName = BlueprintName;
-    if (UEditorAssetLibrary::DoesAssetExist(PackagePath + AssetName))
+    // [LEOCC] name 智能解析：以 '/' 开头视为完整资产路径，按最后一个 '/' 拆 PackagePath + AssetName；
+    // 否则保留旧默认 '/Game/Blueprints/' 前缀。这样可避免传完整路径时被强行拼前缀产生 '//' 双斜杠
+    // （UE 的 CreatePackage 会在 PackageName 含 '//' 时触发 Fatal 断言）。
+    FString PackagePath;
+    FString AssetName;
+    if (BlueprintName.StartsWith(TEXT("/")))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
+        int32 LastSlashIdx = INDEX_NONE;
+        if (BlueprintName.FindLastChar(TEXT('/'), LastSlashIdx) && LastSlashIdx > 0)
+        {
+            PackagePath = BlueprintName.Left(LastSlashIdx + 1); // 含末尾 '/'
+            AssetName = BlueprintName.Mid(LastSlashIdx + 1);
+        }
+        else
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Invalid blueprint path: %s"), *BlueprintName));
+        }
+    }
+    else
+    {
+        PackagePath = TEXT("/Game/Blueprints/");
+        AssetName = BlueprintName;
+    }
+
+    if (AssetName.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid blueprint name (empty asset name): %s"), *BlueprintName));
+    }
+
+    const FString FullPackageName = PackagePath + AssetName;
+
+    // [LEOCC] 防御性护栏：合成后的 PackageName 一旦包含 '//' 直接返回 error，禁止流到 CreatePackage
+    // 触发引擎 Fatal 断言（UObjectGlobals.cpp 中 "double slashes" 检查）。
+    if (FullPackageName.Contains(TEXT("//")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid package name (contains '//'): %s"), *FullPackageName));
+    }
+
+    if (UEditorAssetLibrary::DoesAssetExist(FullPackageName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *FullPackageName));
     }
 
     // Create the blueprint factory
     UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
-    
+
     // Handle parent class
     FString ParentClass;
     Params->TryGetStringField(TEXT("parent_class"), ParentClass);
-    
+
     // Default to Actor if no parent class specified
     UClass* SelectedParentClass = AActor::StaticClass();
-    
+
     // Try to find the specified parent class
     if (!ParentClass.IsEmpty())
     {
-        FString ClassName = ParentClass;
-        if (!ClassName.StartsWith(TEXT("A")))
-        {
-            ClassName = TEXT("A") + ClassName;
-        }
-        
-        // First try direct StaticClass lookup for common classes
         UClass* FoundClass = nullptr;
-        if (ClassName == TEXT("APawn"))
+
+        // [LEOCC] parent_class 智能解析：
+        // - 含 '/' 或 '.' 视为完整路径（如 /Script/PrjKunlun.GA_KLComboAttackBase 或 /Game/.../BP_X.BP_X_C），
+        //   直接 LoadClass<UObject>，不强行套 "A" 前缀（旧逻辑会把 /Script/... 变成 A/Script/...）；
+        // - 否则才走老的"加 A 前缀 + Engine/Game 兜底"。
+        // 失败时返回 error 而不是静默回退到 AActor，避免父类被悄悄错配。
+        if (ParentClass.Contains(TEXT("/")) || ParentClass.Contains(TEXT(".")))
         {
-            FoundClass = APawn::StaticClass();
-        }
-        else if (ClassName == TEXT("AActor"))
-        {
-            FoundClass = AActor::StaticClass();
+            FString ClassPath = ParentClass;
+            // /Script/Module.ClassName 形式不附加 _C；蓝图类（/Game/...）才需要 _C 后缀
+            if (ClassPath.StartsWith(TEXT("/Game/")) && !ClassPath.EndsWith(TEXT("_C")))
+            {
+                ClassPath += TEXT("_C");
+            }
+            FoundClass = LoadClass<UObject>(nullptr, *ClassPath);
         }
         else
         {
-            // Try loading the class using LoadClass which is more reliable than FindObject
-            const FString ClassPath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
-            FoundClass = LoadClass<AActor>(nullptr, *ClassPath);
-            
-            if (!FoundClass)
+            FString ClassName = ParentClass;
+            if (!ClassName.StartsWith(TEXT("A")))
             {
-                // Try alternate paths if not found
-                const FString GameClassPath = FString::Printf(TEXT("/Script/Game.%s"), *ClassName);
-                FoundClass = LoadClass<AActor>(nullptr, *GameClassPath);
+                ClassName = TEXT("A") + ClassName;
+            }
+
+            if (ClassName == TEXT("APawn"))
+            {
+                FoundClass = APawn::StaticClass();
+            }
+            else if (ClassName == TEXT("AActor"))
+            {
+                FoundClass = AActor::StaticClass();
+            }
+            else
+            {
+                const FString EngineClassPath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
+                FoundClass = LoadClass<UObject>(nullptr, *EngineClassPath);
+                if (!FoundClass)
+                {
+                    const FString GameClassPath = FString::Printf(TEXT("/Script/Game.%s"), *ClassName);
+                    FoundClass = LoadClass<UObject>(nullptr, *GameClassPath);
+                }
             }
         }
 
         if (FoundClass)
         {
             SelectedParentClass = FoundClass;
-            UE_LOG(LogTemp, Log, TEXT("Successfully set parent class to '%s'"), *ClassName);
+            UE_LOG(LogTemp, Log, TEXT("Successfully set parent class to '%s'"), *ParentClass);
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("Could not find specified parent class '%s' at paths: /Script/Engine.%s or /Script/Game.%s, defaulting to AActor"), 
-                *ClassName, *ClassName, *ClassName);
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Could not resolve parent class '%s'"), *ParentClass));
         }
     }
-    
+
     Factory->ParentClass = SelectedParentClass;
 
     // Create the blueprint
-    UPackage* Package = CreatePackage(*(PackagePath + AssetName));
+    UPackage* Package = CreatePackage(*FullPackageName);
     UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(UBlueprint::StaticClass(), Package, *AssetName, RF_Standalone | RF_Public, nullptr, GWarn));
 
     if (NewBlueprint)
@@ -528,7 +581,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
 
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("name"), AssetName);
-        ResultObj->SetStringField(TEXT("path"), PackagePath + AssetName);
+        ResultObj->SetStringField(TEXT("path"), FullPackageName);
         return ResultObj;
     }
 
