@@ -6,7 +6,10 @@ SCS, or native C++ CDO). All writes mutate the component template and mark
 the blueprint modified — caller is responsible for compile_blueprint +
 save_dirty_assets to persist.
 
-P0 batch (2026-06-01, LT9): four commands.
+P0 batch (2026-06-01, LT9): get_spline_info, set_spline_points,
+  set_spline_point, clear_spline_points.
+P1 batch (2026-06-01, LT9): add_spline_point, remove_spline_point,
+  set_spline_closed_loop, set_spline_default_up_vector.
 """
 
 import logging
@@ -208,5 +211,181 @@ def register_spline_tools(mcp: FastMCP):
 
         except Exception as e:
             error_msg = f"Error clearing spline points: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    # ----------------------------------------------------------------- P1 -----
+
+    @mcp.tool()
+    def add_spline_point(
+        ctx: Context,
+        blueprint_path: str,
+        component_name: str,
+        location: List[float],
+        index: Optional[int] = None,
+        arrive_tangent: Optional[List[float]] = None,
+        leave_tangent: Optional[List[float]] = None,
+        rotation: Optional[List[float]] = None,
+        scale: Optional[List[float]] = None,
+        type: Optional[str] = None,
+        coordinate_space: str = "Local",
+    ) -> Dict[str, Any]:
+        """Append a spline point at the end, or insert at a specified index.
+
+        If `index` is omitted, -1, or >= current point count, the point is
+        appended. Otherwise it's inserted at that position (existing points
+        from `index` onward shift by +1).
+
+        Optional per-point fields (type, tangents, rotation, scale) follow
+        the same semantics as set_spline_points entries.
+
+        Args:
+            blueprint_path: Full asset path
+            component_name: Spline component name
+            location: [x, y, z]
+            index: Insert position (default None = append)
+            arrive_tangent / leave_tangent: Optional [x, y, z]
+            rotation: Optional [pitch, yaw, roll]
+            scale: Optional [x, y, z]
+            type: Optional point type string
+            coordinate_space: "Local" (default) or "World"
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params: Dict[str, Any] = {
+                "blueprint_path": blueprint_path,
+                "component_name": component_name,
+                "location": location,
+                "coordinate_space": coordinate_space,
+            }
+            if index is not None: params["index"] = index
+            if arrive_tangent is not None: params["arrive_tangent"] = arrive_tangent
+            if leave_tangent is not None: params["leave_tangent"] = leave_tangent
+            if rotation is not None: params["rotation"] = rotation
+            if scale is not None: params["scale"] = scale
+            if type is not None: params["type"] = type
+
+            response = unreal.send_command("add_spline_point", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            error_msg = f"Error adding spline point: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def remove_spline_point(
+        ctx: Context,
+        blueprint_path: str,
+        component_name: str,
+        index: int,
+    ) -> Dict[str, Any]:
+        """Remove a single spline point by index. Points after it shift by -1.
+
+        Args:
+            blueprint_path: Full asset path
+            component_name: Spline component name
+            index: Point index (0-based)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("remove_spline_point", {
+                "blueprint_path": blueprint_path,
+                "component_name": component_name,
+                "index": index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            error_msg = f"Error removing spline point: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def set_spline_closed_loop(
+        ctx: Context,
+        blueprint_path: str,
+        component_name: str,
+        closed_loop: bool,
+    ) -> Dict[str, Any]:
+        """Toggle whether the spline is a closed loop (last point connects back
+        to the first).
+
+        Args:
+            blueprint_path: Full asset path
+            component_name: Spline component name
+            closed_loop: True to enable loop, False to disable
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("set_spline_closed_loop", {
+                "blueprint_path": blueprint_path,
+                "component_name": component_name,
+                "closed_loop": closed_loop,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            error_msg = f"Error setting spline closed loop: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def set_spline_default_up_vector(
+        ctx: Context,
+        blueprint_path: str,
+        component_name: str,
+        up_vector: List[float],
+        coordinate_space: str = "Local",
+    ) -> Dict[str, Any]:
+        """Set the spline's DefaultUpVector — drives rotation interpolation
+        when point rotations aren't explicitly authored.
+
+        Args:
+            blueprint_path: Full asset path
+            component_name: Spline component name
+            up_vector: [x, y, z], typically [0, 0, 1] for Z-up
+            coordinate_space: "Local" (default) or "World"
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("set_spline_default_up_vector", {
+                "blueprint_path": blueprint_path,
+                "component_name": component_name,
+                "up_vector": up_vector,
+                "coordinate_space": coordinate_space,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            error_msg = f"Error setting spline default up vector: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}

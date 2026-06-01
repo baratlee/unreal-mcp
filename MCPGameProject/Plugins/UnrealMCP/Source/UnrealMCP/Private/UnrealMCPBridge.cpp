@@ -463,11 +463,15 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }
-            // Spline Commands (LT9 P0, 2026-06-01)
+            // Spline Commands (LT9 P0+P1, 2026-06-01)
             else if (CommandType == TEXT("get_spline_info") ||
                      CommandType == TEXT("set_spline_points") ||
                      CommandType == TEXT("set_spline_point") ||
-                     CommandType == TEXT("clear_spline_points"))
+                     CommandType == TEXT("clear_spline_points") ||
+                     CommandType == TEXT("add_spline_point") ||
+                     CommandType == TEXT("remove_spline_point") ||
+                     CommandType == TEXT("set_spline_closed_loop") ||
+                     CommandType == TEXT("set_spline_default_up_vector"))
             {
                 ResultJson = SplineCommands->HandleCommand(CommandType, Params);
             }

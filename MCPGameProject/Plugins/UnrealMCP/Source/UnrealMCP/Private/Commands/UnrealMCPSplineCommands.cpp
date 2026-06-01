@@ -146,6 +146,10 @@ TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleCommand(const FString& C
 	if (CommandType == TEXT("set_spline_points")) return HandleSetSplinePoints(Params);
 	if (CommandType == TEXT("set_spline_point")) return HandleSetSplinePoint(Params);
 	if (CommandType == TEXT("clear_spline_points")) return HandleClearSplinePoints(Params);
+	if (CommandType == TEXT("add_spline_point")) return HandleAddSplinePoint(Params);
+	if (CommandType == TEXT("remove_spline_point")) return HandleRemoveSplinePoint(Params);
+	if (CommandType == TEXT("set_spline_closed_loop")) return HandleSetSplineClosedLoop(Params);
+	if (CommandType == TEXT("set_spline_default_up_vector")) return HandleSetSplineDefaultUpVector(Params);
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown spline command: %s"), *CommandType));
 }
 
@@ -447,5 +451,249 @@ TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleClearSplinePoints(const 
 	Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
 	Result->SetStringField(TEXT("component_name"), ComponentName);
 	Result->SetNumberField(TEXT("num_points"), 0);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// add_spline_point (append or insert at index)
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleAddSplinePoint(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	FString ComponentName;
+	if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+	}
+
+	FString Source;
+	USplineComponent* Spline = FindSplineComponentTemplate(Blueprint, ComponentName, Source);
+	if (!Spline)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SplineComponent not found: %s"), *ComponentName));
+	}
+
+	FVector Location(0);
+	if (!ReadVector(Params, TEXT("location"), Location))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'location' parameter (expected [x, y, z])"));
+	}
+
+	const ESplineCoordinateSpace::Type CoordSpace = ParseCoordinateSpace(Params, ESplineCoordinateSpace::Local);
+
+	// Optional index — omit or -1 means append
+	int32 Index = -1;
+	Params->TryGetNumberField(TEXT("index"), Index);
+
+	const int32 CurrentNum = Spline->GetNumberOfSplinePoints();
+	int32 NewIndex = -1;
+	if (Index < 0 || Index >= CurrentNum)
+	{
+		// Append at end
+		Spline->AddSplinePoint(Location, CoordSpace, false);
+		NewIndex = Spline->GetNumberOfSplinePoints() - 1;
+	}
+	else
+	{
+		Spline->AddSplinePointAtIndex(Location, Index, CoordSpace, false);
+		NewIndex = Index;
+	}
+
+	// Optional per-point fields (type, tangents, rotation, scale)
+	FString TypeStr;
+	if (Params->TryGetStringField(TEXT("type"), TypeStr))
+	{
+		Spline->SetSplinePointType(NewIndex, ParsePointType(TypeStr, ESplinePointType::Curve), false);
+	}
+
+	FVector ArriveTangent, LeaveTangent;
+	const bool bHasArrive = ReadVector(Params, TEXT("arrive_tangent"), ArriveTangent);
+	const bool bHasLeave = ReadVector(Params, TEXT("leave_tangent"), LeaveTangent);
+	if (bHasArrive && bHasLeave)
+	{
+		Spline->SetTangentsAtSplinePoint(NewIndex, ArriveTangent, LeaveTangent, CoordSpace, false);
+	}
+	else if (bHasArrive)
+	{
+		Spline->SetTangentAtSplinePoint(NewIndex, ArriveTangent, CoordSpace, false);
+	}
+
+	FRotator Rotation;
+	if (ReadRotator(Params, TEXT("rotation"), Rotation))
+	{
+		Spline->SetRotationAtSplinePoint(NewIndex, Rotation, CoordSpace, false);
+	}
+
+	FVector Scale;
+	if (ReadVector(Params, TEXT("scale"), Scale))
+	{
+		Spline->SetScaleAtSplinePoint(NewIndex, Scale, false);
+	}
+
+	Spline->UpdateSpline();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+	Result->SetStringField(TEXT("component_name"), ComponentName);
+	Result->SetNumberField(TEXT("index"), NewIndex);
+	Result->SetNumberField(TEXT("num_points"), Spline->GetNumberOfSplinePoints());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// remove_spline_point (delete by index)
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleRemoveSplinePoint(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	FString ComponentName;
+	if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+	}
+
+	int32 Index = -1;
+	if (!Params->TryGetNumberField(TEXT("index"), Index) || Index < 0)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing or invalid 'index' parameter"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+	}
+
+	FString Source;
+	USplineComponent* Spline = FindSplineComponentTemplate(Blueprint, ComponentName, Source);
+	if (!Spline)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SplineComponent not found: %s"), *ComponentName));
+	}
+
+	const int32 CurrentNum = Spline->GetNumberOfSplinePoints();
+	if (Index >= CurrentNum)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Index %d out of range (num_points=%d)"), Index, CurrentNum));
+	}
+
+	Spline->RemoveSplinePoint(Index, true);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+	Result->SetStringField(TEXT("component_name"), ComponentName);
+	Result->SetNumberField(TEXT("removed_index"), Index);
+	Result->SetNumberField(TEXT("num_points"), Spline->GetNumberOfSplinePoints());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// set_spline_closed_loop
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleSetSplineClosedLoop(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	FString ComponentName;
+	if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+	}
+
+	bool bClosedLoop = false;
+	if (!Params->TryGetBoolField(TEXT("closed_loop"), bClosedLoop))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'closed_loop' parameter"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+	}
+
+	FString Source;
+	USplineComponent* Spline = FindSplineComponentTemplate(Blueprint, ComponentName, Source);
+	if (!Spline)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SplineComponent not found: %s"), *ComponentName));
+	}
+
+	Spline->SetClosedLoop(bClosedLoop, true);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+	Result->SetStringField(TEXT("component_name"), ComponentName);
+	Result->SetBoolField(TEXT("closed_loop"), Spline->IsClosedLoop());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// set_spline_default_up_vector
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPSplineCommands::HandleSetSplineDefaultUpVector(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	FString ComponentName;
+	if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+	}
+
+	FVector UpVector;
+	if (!ReadVector(Params, TEXT("up_vector"), UpVector))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'up_vector' parameter (expected [x, y, z])"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+	}
+
+	FString Source;
+	USplineComponent* Spline = FindSplineComponentTemplate(Blueprint, ComponentName, Source);
+	if (!Spline)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SplineComponent not found: %s"), *ComponentName));
+	}
+
+	const ESplineCoordinateSpace::Type CoordSpace = ParseCoordinateSpace(Params, ESplineCoordinateSpace::Local);
+	Spline->SetDefaultUpVector(UpVector, CoordSpace);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+	Result->SetStringField(TEXT("component_name"), ComponentName);
+	Result->SetField(TEXT("default_up_vector"), VectorToJson(Spline->GetDefaultUpVector(CoordSpace)));
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
 }
