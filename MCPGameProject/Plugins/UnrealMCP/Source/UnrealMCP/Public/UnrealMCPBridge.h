@@ -18,6 +18,7 @@
 #include "Commands/UnrealMCPDataAssetCommands.h"
 #include "Commands/UnrealMCPMaterialCommands.h"
 #include "Commands/UnrealMCPSplineCommands.h"
+#include "Commands/UnrealMCPNiagaraCommands.h"
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -71,4 +72,5 @@ private:
 	TSharedPtr<FUnrealMCPDataAssetCommands> DataAssetCommands;
 	TSharedPtr<FUnrealMCPMaterialCommands> MaterialCommands;
 	TSharedPtr<FUnrealMCPSplineCommands> SplineCommands;
+	TSharedPtr<FUnrealMCPNiagaraCommands> NiagaraCommands;
 };

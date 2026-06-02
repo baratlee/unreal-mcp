@@ -62,6 +62,7 @@
 #include "Commands/UnrealMCPStateTreeCommands.h"
 #include "Commands/UnrealMCPMaterialCommands.h"
 #include "Commands/UnrealMCPSplineCommands.h"
+#include "Commands/UnrealMCPNiagaraCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -112,6 +113,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     DataAssetCommands = MakeShared<FUnrealMCPDataAssetCommands>();
     MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
     SplineCommands = MakeShared<FUnrealMCPSplineCommands>();
+    NiagaraCommands = MakeShared<FUnrealMCPNiagaraCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -126,6 +128,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     DataAssetCommands.Reset();
     MaterialCommands.Reset();
     SplineCommands.Reset();
+    NiagaraCommands.Reset();
 }
 
 // Initialize subsystem
@@ -474,6 +477,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_spline_default_up_vector"))
             {
                 ResultJson = SplineCommands->HandleCommand(CommandType, Params);
+            }
+            // Niagara Commands (LT12 P0, 2026-06-02: read-only system + exposed parameters)
+            else if (CommandType == TEXT("get_niagara_system_info"))
+            {
+                ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }
             else
             {
