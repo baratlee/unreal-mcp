@@ -478,8 +478,10 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             {
                 ResultJson = SplineCommands->HandleCommand(CommandType, Params);
             }
-            // Niagara Commands (LT12 P0, 2026-06-02: read-only system + exposed parameters)
-            else if (CommandType == TEXT("get_niagara_system_info"))
+            // Niagara Commands (LT12 P0+P1, 2026-06-02: read-only system / exposed parameters / list / emitter renderers)
+            else if (CommandType == TEXT("get_niagara_system_info") ||
+                     CommandType == TEXT("list_niagara_systems") ||
+                     CommandType == TEXT("get_niagara_emitter_renderers"))
             {
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }

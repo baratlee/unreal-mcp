@@ -1,10 +1,19 @@
 #include "Commands/UnrealMCPNiagaraCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "NiagaraSystem.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraParameterStore.h"
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraTypes.h"
+#include "NiagaraRendererProperties.h"
+#include "NiagaraMeshRendererProperties.h"
+#include "NiagaraMeshRendererMeshProperties.h"
+#include "Materials/MaterialInterface.h"
+#include "Engine/StaticMesh.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/ARFilter.h"
 #include "UObject/UObjectGlobals.h"
 #include "Math/Vector.h"
 #include "Math/Vector2D.h"
@@ -110,6 +119,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(
 	{
 		return HandleGetNiagaraSystemInfo(Params);
 	}
+	if (CommandType == TEXT("list_niagara_systems"))
+	{
+		return HandleListNiagaraSystems(Params);
+	}
+	if (CommandType == TEXT("get_niagara_emitter_renderers"))
+	{
+		return HandleGetNiagaraEmitterRenderers(Params);
+	}
 	return FUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
 }
@@ -179,6 +196,145 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleGetNiagaraSystemInfo(co
 		Result->SetArrayField(TEXT("exposed_parameters"), ParamArr);
 		Result->SetNumberField(TEXT("exposed_parameter_count"), ParamArr.Num());
 	}
+
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// list_niagara_systems
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListNiagaraSystems(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PathFilter;
+	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UNiagaraSystem::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	if (!PathFilter.IsEmpty())
+	{
+		Filter.PackagePaths.Add(*PathFilter);
+		Filter.bRecursivePaths = true;
+	}
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry.GetAssets(Filter, AssetDataList);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Arr;
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("asset_path"), AssetData.GetObjectPathString());
+		Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+		Entry->SetStringField(TEXT("package_path"), AssetData.PackagePath.ToString());
+		Arr.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+	Result->SetArrayField(TEXT("systems"), Arr);
+	Result->SetNumberField(TEXT("count"), Arr.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// ---------------------------------------------------------------------------
+// get_niagara_emitter_renderers
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleGetNiagaraEmitterRenderers(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	UObject* Asset = NiagaraLoadAssetWithFallback(AssetPath);
+	UNiagaraSystem* System = Cast<UNiagaraSystem>(Asset);
+	if (!System)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a UNiagaraSystem: %s"), *AssetPath));
+	}
+
+	// [LEOCC] Match emitter by handle name (matches get_niagara_system_info's
+	// `emitters[].name`). Case-sensitive — Niagara names are FName but compared
+	// as string here for clarity.
+	const FNiagaraEmitterHandle* MatchedHandle = nullptr;
+	for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
+	{
+		if (Handle.GetName().ToString() == EmitterName)
+		{
+			MatchedHandle = &Handle;
+			break;
+		}
+	}
+	if (!MatchedHandle)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Emitter '%s' not found on system %s"), *EmitterName, *AssetPath));
+	}
+
+	const FVersionedNiagaraEmitterData* EmitterData = MatchedHandle->GetEmitterData();
+	if (!EmitterData)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Emitter '%s' has no resolved EmitterData (version issue?)"), *EmitterName));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), System->GetPathName());
+	Result->SetStringField(TEXT("emitter_name"), EmitterName);
+	Result->SetBoolField(TEXT("emitter_enabled"), MatchedHandle->GetIsEnabled());
+
+	TArray<TSharedPtr<FJsonValue>> RendererArr;
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		if (!Renderer) continue;
+
+		TSharedPtr<FJsonObject> RendererJson = MakeShared<FJsonObject>();
+		RendererJson->SetStringField(TEXT("class_name"), Renderer->GetClass()->GetName());
+		RendererJson->SetBoolField(TEXT("enabled"), Renderer->GetIsEnabled());
+
+		// Materials via the base-class virtual — covers Sprite/Mesh/Ribbon/Light/Decal/etc.
+		// nullptr emitter instance is fine for editor-time asset inspection (returns
+		// the configured materials, not the per-instance overrides).
+		{
+			TArray<UMaterialInterface*> Materials;
+			Renderer->GetUsedMaterials(nullptr, Materials);
+			TArray<TSharedPtr<FJsonValue>> MatArr;
+			for (UMaterialInterface* Mat : Materials)
+			{
+				MatArr.Add(MakeShared<FJsonValueString>(Mat ? Mat->GetPathName() : FString()));
+			}
+			RendererJson->SetArrayField(TEXT("materials"), MatArr);
+		}
+
+		// Mesh renderer special-case: expose the Meshes[] static mesh refs.
+		if (const UNiagaraMeshRendererProperties* MeshRenderer = Cast<UNiagaraMeshRendererProperties>(Renderer))
+		{
+			TArray<TSharedPtr<FJsonValue>> MeshArr;
+			for (const FNiagaraMeshRendererMeshProperties& MP : MeshRenderer->Meshes)
+			{
+				TSharedPtr<FJsonObject> MeshEntry = MakeShared<FJsonObject>();
+				MeshEntry->SetStringField(TEXT("mesh_path"),
+					MP.Mesh ? MP.Mesh->GetPathName() : FString());
+				MeshArr.Add(MakeShared<FJsonValueObject>(MeshEntry));
+			}
+			RendererJson->SetArrayField(TEXT("meshes"), MeshArr);
+		}
+
+		RendererArr.Add(MakeShared<FJsonValueObject>(RendererJson));
+	}
+	Result->SetArrayField(TEXT("renderers"), RendererArr);
+	Result->SetNumberField(TEXT("renderer_count"), RendererArr.Num());
 
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
 }

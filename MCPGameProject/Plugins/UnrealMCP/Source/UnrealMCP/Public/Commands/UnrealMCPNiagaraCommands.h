@@ -19,4 +19,6 @@ public:
 
 private:
 	TSharedPtr<FJsonObject> HandleGetNiagaraSystemInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleListNiagaraSystems(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraEmitterRenderers(const TSharedPtr<FJsonObject>& Params);
 };

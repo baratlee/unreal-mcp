@@ -64,3 +64,88 @@ def register_niagara_tools(mcp: FastMCP):
             error_msg = f"Error getting niagara system info: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def list_niagara_systems(
+        ctx: Context,
+        path_filter: str = "",
+    ) -> Dict[str, Any]:
+        """List all UNiagaraSystem assets in the project, optionally under a path.
+
+        Asset Registry scan — fast, returns asset paths + names + package paths.
+        Use this to discover sample effects before drilling into individual
+        systems with `get_niagara_system_info` / `get_niagara_emitter_renderers`.
+
+        Args:
+            path_filter: Optional package path prefix to scope the search
+                (e.g. "/Game/Examples/Forest_VFX/Niagara"). Empty = whole project.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("list_niagara_systems", {"path_filter": path_filter})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"list_niagara_systems response (filter='{path_filter}')")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error listing niagara systems: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def get_niagara_emitter_renderers(
+        ctx: Context,
+        asset_path: str,
+        emitter_name: str,
+    ) -> Dict[str, Any]:
+        """Inspect a single emitter's renderers in a UNiagaraSystem.
+
+        For the named emitter, walks its `RendererProperties[]` and returns,
+        per renderer:
+          - `class_name`: e.g. UNiagaraSpriteRendererProperties /
+            UNiagaraMeshRendererProperties / UNiagaraRibbonRendererProperties /
+            UNiagaraLightRendererProperties / UNiagaraDecalRendererProperties /
+            ...
+          - `enabled`: renderer-level enable flag
+          - `materials`: list of asset paths (from base-class `GetUsedMaterials`,
+            covers Sprite Material, Ribbon Material, Mesh override materials, etc.)
+          - `meshes` (only for Mesh renderers): list of `{mesh_path}` from the
+            renderer's `Meshes[]` array (Mesh renderer's primary content).
+        Also reports `emitter_enabled` (the emitter handle's own enable flag).
+
+        Args:
+            asset_path: Full path to the UNiagaraSystem
+                (e.g. "/Game/Examples/.../NS_Foo").
+            emitter_name: Emitter handle name, as listed by
+                `get_niagara_system_info`'s `emitters[].name`.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_niagara_emitter_renderers", {
+                "asset_path": asset_path,
+                "emitter_name": emitter_name,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"get_niagara_emitter_renderers response for: {asset_path} :: {emitter_name}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error getting niagara emitter renderers: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
