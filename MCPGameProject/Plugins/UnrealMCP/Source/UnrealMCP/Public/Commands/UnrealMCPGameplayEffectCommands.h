@@ -36,4 +36,16 @@ private:
 	TSharedPtr<FJsonObject> HandleRemoveGameplayEffectModifier(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetGameplayEffectModifier(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetGameplayEffectInheritedTags(const TSharedPtr<FJsonObject>& Params);
+
+	// P2 (2026-06-03 second pass)
+	TSharedPtr<FJsonObject> HandleListGameplayEffects(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDeleteGameplayEffect(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddGameplayEffectCue(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveGameplayEffectCue(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetGameplayEffectCue(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetGameplayEffectTagRequirements(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetGameplayEffectChanceToApply(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddGameplayEffectGrantedAbility(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveGameplayEffectGrantedAbility(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetGameplayEffectGrantedAbility(const TSharedPtr<FJsonObject>& Params);
 };

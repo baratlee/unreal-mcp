@@ -6,9 +6,21 @@
 #include "GameplayEffectComponent.h"
 #include "GameplayEffectComponents/AssetTagsGameplayEffectComponent.h"
 #include "GameplayEffectComponents/TargetTagsGameplayEffectComponent.h"
+#include "GameplayEffectComponents/TargetTagRequirementsGameplayEffectComponent.h"
+#include "GameplayEffectComponents/ChanceToApplyGameplayEffectComponent.h"
+#include "GameplayEffectComponents/AbilitiesGameplayEffectComponent.h"
+#include "GameplayEffectComponents/ImmunityGameplayEffectComponent.h"
+#include "GameplayEffectComponents/RemoveOtherGameplayEffectComponent.h"
+#include "Abilities/GameplayAbility.h"
+#include "GameplayAbilitySpec.h"
 #include "AttributeSet.h"
 #include "ScalableFloat.h"
 #include "GameplayTagContainer.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "ObjectTools.h"
+#include "UObject/UnrealType.h"
+#include "UObject/PropertyPortFlags.h"
 
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -114,6 +126,15 @@ namespace
 	}
 
 	// ------------------------------------------------------------------
+	// Forward declarations — definitions appear later in this TU but are
+	// referenced from earlier helpers (ModifierToJson / ParseModifierMagnitude).
+	// FAttributeBasedFloat itself is provided by GameplayEffectTypes.h.
+	// ------------------------------------------------------------------
+	bool GEParseAttributeBasedFloat(const TSharedPtr<FJsonObject>& Obj,
+	                                FAttributeBasedFloat& Out, FString& OutError);
+	TSharedPtr<FJsonObject> GEAttributeBasedFloatToJson(const FAttributeBasedFloat& A);
+
+	// ------------------------------------------------------------------
 	// FScalableFloat → JSON
 	// ------------------------------------------------------------------
 	TSharedPtr<FJsonObject> GEScalableFloatToJson(const FScalableFloat& SF)
@@ -177,9 +198,24 @@ namespace
 			break;
 		}
 		case EGameplayEffectMagnitudeCalculation::AttributeBased:
+		{
+			// [LEOCC] P2: read AttributeBasedMagnitude via reflection (the field
+			// is `protected` on FGameplayEffectModifierMagnitude, no public getter).
+			if (const FStructProperty* AttrProp = CastField<FStructProperty>(
+				FGameplayEffectModifierMagnitude::StaticStruct()->FindPropertyByName(TEXT("AttributeBasedMagnitude"))))
+			{
+				const FAttributeBasedFloat* ABF =
+					AttrProp->ContainerPtrToValuePtr<FAttributeBasedFloat>(&Mag);
+				if (ABF)
+				{
+					Obj->SetObjectField(TEXT("attribute_based"), GEAttributeBasedFloatToJson(*ABF));
+				}
+			}
+			break;
+		}
 		case EGameplayEffectMagnitudeCalculation::CustomCalculationClass:
 		default:
-			// Detail extraction deferred to P2 — private fields, no public getter.
+			// CustomCalculationClass detail deferred to P3 (needs class reference + scoped mods).
 			break;
 		}
 		return Obj;
@@ -406,7 +442,25 @@ namespace
 			OutMag = FGameplayEffectModifierMagnitude(SBC);
 			return true;
 		}
-		OutError = FString::Printf(TEXT("Unsupported magnitude calculation '%s' (P1 supports ScalableFloat + SetByCaller only)"), *CalcStr);
+		if (CalcStr.Equals(TEXT("AttributeBased"), ESearchCase::IgnoreCase))
+		{
+			// [LEOCC] P2: AttributeBased magnitude full-fielded parse.
+			FAttributeBasedFloat ABF;
+			const TSharedPtr<FJsonObject>* ABFObj = nullptr;
+			TSharedPtr<FJsonObject> Root;
+			if (Obj->TryGetObjectField(TEXT("attribute_based"), ABFObj) && ABFObj && ABFObj->IsValid())
+			{
+				Root = *ABFObj;
+			}
+			else
+			{
+				Root = Obj;
+			}
+			if (!GEParseAttributeBasedFloat(Root, ABF, OutError)) return false;
+			OutMag = FGameplayEffectModifierMagnitude(ABF);
+			return true;
+		}
+		OutError = FString::Printf(TEXT("Unsupported magnitude calculation '%s' (P1+P2 supports ScalableFloat / SetByCaller / AttributeBased; CustomCalculationClass is P3)"), *CalcStr);
 		return false;
 	}
 
@@ -438,6 +492,285 @@ namespace
 		{
 			Pkg->MarkPackageDirty();
 		}
+	}
+
+	// ==================================================================
+	// P2 helpers (2026-06-03 second pass)
+	// ==================================================================
+
+	// Parse { required: [tag strings], ignored: [tag strings] } → FGameplayTagRequirements.
+	// Missing fields = keep existing on Out (caller seeds Out before calling).
+	bool GEParseTagRequirements(const TSharedPtr<FJsonObject>& Obj, FGameplayTagRequirements& Out)
+	{
+		if (!Obj.IsValid()) return false;
+		bool bChanged = false;
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		if (Obj->TryGetArrayField(TEXT("required"), Arr) && Arr)
+		{
+			GEParseTagArray(*Arr, Out.RequireTags);
+			bChanged = true;
+		}
+		if (Obj->TryGetArrayField(TEXT("ignored"), Arr) && Arr)
+		{
+			GEParseTagArray(*Arr, Out.IgnoreTags);
+			bChanged = true;
+		}
+		return bChanged;
+	}
+
+	TSharedPtr<FJsonObject> GETagRequirementsToJson(const FGameplayTagRequirements& Req)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetField(TEXT("required"), GETagContainerToJson(Req.RequireTags));
+		Obj->SetField(TEXT("ignored"),  GETagContainerToJson(Req.IgnoreTags));
+		return Obj;
+	}
+
+	// Parse a JSON ScalableFloat into an existing FScalableFloat (used by AttributeBased
+	// nested fields). Same semantics as GEParseScalableFloat.
+	FScalableFloat GEParseScalableFloatFromValue(const TSharedPtr<FJsonValue>& V)
+	{
+		if (!V.IsValid()) return FScalableFloat();
+		if (V->Type == EJson::Object) return GEParseScalableFloat(V->AsObject());
+		// Number → flat scalar
+		if (V->Type == EJson::Number)
+		{
+			FScalableFloat SF; SF.Value = static_cast<float>(V->AsNumber()); return SF;
+		}
+		return FScalableFloat();
+	}
+
+	// Parse a JSON AttributeBased magnitude object into FAttributeBasedFloat.
+	// Schema:
+	// {
+	//   coefficient:                 ScalableFloat | number
+	//   pre_multiply_additive_value: ScalableFloat | number
+	//   post_multiply_additive_value:ScalableFloat | number
+	//   backing_attribute: { attribute: "Class.Prop", source: "Source"|"Target", snapshot: bool }
+	//   attribute_curve:    { curve_table, row_name }
+	//   attribute_calculation_type: enum string
+	//   final_channel:              enum string
+	//   source_tag_filter:          [tag strings]
+	//   target_tag_filter:          [tag strings]
+	// }
+	bool GEParseAttributeBasedFloat(const TSharedPtr<FJsonObject>& Obj,
+	                                FAttributeBasedFloat& Out, FString& OutError)
+	{
+		if (!Obj.IsValid())
+		{
+			OutError = TEXT("attribute_based object missing");
+			return false;
+		}
+
+		Out.Coefficient                 = GEParseScalableFloatFromValue(Obj->TryGetField(TEXT("coefficient")));
+		Out.PreMultiplyAdditiveValue    = GEParseScalableFloatFromValue(Obj->TryGetField(TEXT("pre_multiply_additive_value")));
+		Out.PostMultiplyAdditiveValue   = GEParseScalableFloatFromValue(Obj->TryGetField(TEXT("post_multiply_additive_value")));
+
+		const TSharedPtr<FJsonObject>* BackingObj = nullptr;
+		if (Obj->TryGetObjectField(TEXT("backing_attribute"), BackingObj) && BackingObj && (*BackingObj).IsValid())
+		{
+			FString AttrStr;
+			if ((*BackingObj)->TryGetStringField(TEXT("attribute"), AttrStr))
+			{
+				if (!GEParseAttribute(AttrStr, Out.BackingAttribute.AttributeToCapture, OutError)) return false;
+			}
+			FString SrcStr;
+			if ((*BackingObj)->TryGetStringField(TEXT("source"), SrcStr))
+			{
+				EGameplayEffectAttributeCaptureSource Src;
+				if (!GEParseEnum(SrcStr, Src))
+				{
+					OutError = FString::Printf(TEXT("Invalid backing_attribute.source: %s"), *SrcStr);
+					return false;
+				}
+				Out.BackingAttribute.AttributeSource = Src;
+			}
+			bool Snapshot = false;
+			if ((*BackingObj)->TryGetBoolField(TEXT("snapshot"), Snapshot))
+			{
+				Out.BackingAttribute.bSnapshot = Snapshot;
+			}
+		}
+
+		const TSharedPtr<FJsonObject>* CurveObj = nullptr;
+		if (Obj->TryGetObjectField(TEXT("attribute_curve"), CurveObj) && CurveObj && (*CurveObj).IsValid())
+		{
+			FString CT, RN;
+			if ((*CurveObj)->TryGetStringField(TEXT("curve_table"), CT) && !CT.IsEmpty())
+			{
+				Out.AttributeCurve.CurveTable = Cast<UCurveTable>(GELoadAssetWithFallback(CT));
+			}
+			if ((*CurveObj)->TryGetStringField(TEXT("row_name"), RN) && !RN.IsEmpty())
+			{
+				Out.AttributeCurve.RowName = FName(*RN);
+			}
+		}
+
+		FString CalcTypeStr;
+		if (Obj->TryGetStringField(TEXT("attribute_calculation_type"), CalcTypeStr))
+		{
+			EAttributeBasedFloatCalculationType V;
+			if (!GEParseEnum(CalcTypeStr, V))
+			{
+				OutError = FString::Printf(TEXT("Invalid attribute_calculation_type: %s"), *CalcTypeStr);
+				return false;
+			}
+			Out.AttributeCalculationType = V;
+		}
+
+		FString ChannelStr;
+		if (Obj->TryGetStringField(TEXT("final_channel"), ChannelStr))
+		{
+			EGameplayModEvaluationChannel V;
+			if (!GEParseEnum(ChannelStr, V))
+			{
+				OutError = FString::Printf(TEXT("Invalid final_channel: %s"), *ChannelStr);
+				return false;
+			}
+			Out.FinalChannel = V;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* TagArr = nullptr;
+		if (Obj->TryGetArrayField(TEXT("source_tag_filter"), TagArr) && TagArr) GEParseTagArray(*TagArr, Out.SourceTagFilter);
+		if (Obj->TryGetArrayField(TEXT("target_tag_filter"), TagArr) && TagArr) GEParseTagArray(*TagArr, Out.TargetTagFilter);
+		return true;
+	}
+
+	// Serialize FAttributeBasedFloat to JSON (full 7-field detail).
+	TSharedPtr<FJsonObject> GEAttributeBasedFloatToJson(const FAttributeBasedFloat& A)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetObjectField(TEXT("coefficient"),                   GEScalableFloatToJson(A.Coefficient));
+		Obj->SetObjectField(TEXT("pre_multiply_additive_value"),   GEScalableFloatToJson(A.PreMultiplyAdditiveValue));
+		Obj->SetObjectField(TEXT("post_multiply_additive_value"),  GEScalableFloatToJson(A.PostMultiplyAdditiveValue));
+
+		TSharedPtr<FJsonObject> Backing = MakeShared<FJsonObject>();
+		Backing->SetStringField(TEXT("attribute"), GEAttributeToString(A.BackingAttribute.AttributeToCapture));
+		Backing->SetStringField(TEXT("source"),    GEEnumToString<EGameplayEffectAttributeCaptureSource>(A.BackingAttribute.AttributeSource));
+		Backing->SetBoolField  (TEXT("snapshot"),  A.BackingAttribute.bSnapshot);
+		Obj->SetObjectField(TEXT("backing_attribute"), Backing);
+
+		TSharedPtr<FJsonObject> Curve = MakeShared<FJsonObject>();
+		if (A.AttributeCurve.CurveTable)   Curve->SetStringField(TEXT("curve_table"), A.AttributeCurve.CurveTable->GetPathName());
+		if (!A.AttributeCurve.RowName.IsNone()) Curve->SetStringField(TEXT("row_name"), A.AttributeCurve.RowName.ToString());
+		Obj->SetObjectField(TEXT("attribute_curve"), Curve);
+
+		Obj->SetStringField(TEXT("attribute_calculation_type"), GEEnumToString<EAttributeBasedFloatCalculationType>(A.AttributeCalculationType));
+		Obj->SetStringField(TEXT("final_channel"),              GEEnumToString<EGameplayModEvaluationChannel>(A.FinalChannel));
+		Obj->SetField(TEXT("source_tag_filter"), GETagContainerToJson(A.SourceTagFilter));
+		Obj->SetField(TEXT("target_tag_filter"), GETagContainerToJson(A.TargetTagFilter));
+		return Obj;
+	}
+
+	// Parse a FGameplayEffectCue:
+	//   { cue_tags: [...], min_level: 0, max_level: 0, magnitude_attribute?: "Class.Prop" }
+	bool GEParseGameplayEffectCue(const TSharedPtr<FJsonObject>& Obj,
+	                              FGameplayEffectCue& Out, FString& OutError)
+	{
+		if (!Obj.IsValid())
+		{
+			OutError = TEXT("cue object missing");
+			return false;
+		}
+		double Min = Out.MinLevel, Max = Out.MaxLevel;
+		Obj->TryGetNumberField(TEXT("min_level"), Min);
+		Obj->TryGetNumberField(TEXT("max_level"), Max);
+		Out.MinLevel = static_cast<float>(Min);
+		Out.MaxLevel = static_cast<float>(Max);
+
+		const TArray<TSharedPtr<FJsonValue>>* TagArr = nullptr;
+		if (Obj->TryGetArrayField(TEXT("cue_tags"), TagArr) && TagArr)
+		{
+			GEParseTagArray(*TagArr, Out.GameplayCueTags);
+		}
+
+		FString AttrStr;
+		if (Obj->TryGetStringField(TEXT("magnitude_attribute"), AttrStr) && !AttrStr.IsEmpty())
+		{
+			FString Err;
+			if (!GEParseAttribute(AttrStr, Out.MagnitudeAttribute, Err)) { OutError = Err; return false; }
+		}
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> GECueToJson(const FGameplayEffectCue& Cue)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetField(TEXT("cue_tags"), GETagContainerToJson(Cue.GameplayCueTags));
+		Obj->SetNumberField(TEXT("min_level"), Cue.MinLevel);
+		Obj->SetNumberField(TEXT("max_level"), Cue.MaxLevel);
+		Obj->SetStringField(TEXT("magnitude_attribute"), GEAttributeToString(Cue.MagnitudeAttribute));
+		return Obj;
+	}
+
+	// Parse FGameplayAbilitySpecConfig:
+	//   { ability_class: "/Game/.../GA_Foo" | "/Script/Module.GA_Foo_C",
+	//     level: ScalableFloat | number,
+	//     input_id: int,
+	//     removal_policy: enum string }
+	bool GEParseAbilitySpecConfig(const TSharedPtr<FJsonObject>& Obj,
+	                              FGameplayAbilitySpecConfig& Out, FString& OutError)
+	{
+		if (!Obj.IsValid())
+		{
+			OutError = TEXT("granted_ability object missing");
+			return false;
+		}
+		FString ClassPath;
+		if (Obj->TryGetStringField(TEXT("ability_class"), ClassPath) && !ClassPath.IsEmpty())
+		{
+			UClass* Loaded = LoadClass<UObject>(nullptr, *ClassPath);
+			if (!Loaded)
+			{
+				UObject* AsObj = GELoadAssetWithFallback(ClassPath);
+				if (UBlueprint* AsBP = Cast<UBlueprint>(AsObj))    Loaded = AsBP->GeneratedClass;
+				else if (UClass* AsCls = Cast<UClass>(AsObj))      Loaded = AsCls;
+			}
+			if (!Loaded || !Loaded->IsChildOf(UGameplayAbility::StaticClass()))
+			{
+				OutError = FString::Printf(TEXT("ability_class is not a UGameplayAbility subclass: %s"), *ClassPath);
+				return false;
+			}
+			Out.Ability = Loaded;
+		}
+		if (Obj->HasField(TEXT("level")))
+		{
+			Out.LevelScalableFloat = GEParseScalableFloatFromValue(Obj->TryGetField(TEXT("level")));
+		}
+		int32 Input;
+		if (Obj->TryGetNumberField(TEXT("input_id"), Input)) Out.InputID = Input;
+		FString PolicyStr;
+		if (Obj->TryGetStringField(TEXT("removal_policy"), PolicyStr))
+		{
+			EGameplayEffectGrantedAbilityRemovePolicy P;
+			if (!GEParseEnum(PolicyStr, P))
+			{
+				OutError = FString::Printf(TEXT("Invalid removal_policy: %s"), *PolicyStr);
+				return false;
+			}
+			Out.RemovalPolicy = P;
+		}
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> GEAbilitySpecConfigToJson(const FGameplayAbilitySpecConfig& C)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("ability_class"), C.Ability ? C.Ability->GetPathName() : FString());
+		Obj->SetObjectField(TEXT("level"), GEScalableFloatToJson(C.LevelScalableFloat));
+		Obj->SetNumberField(TEXT("input_id"), C.InputID);
+		Obj->SetStringField(TEXT("removal_policy"),
+			GEEnumToString<EGameplayEffectGrantedAbilityRemovePolicy>(C.RemovalPolicy));
+		return Obj;
+	}
+
+	// Reflection access to UAbilitiesGEC's protected GrantAbilityConfigs array.
+	// Returns the FScriptArrayHelper bound to it (caller checks IsValid via Prop).
+	FArrayProperty* GEFindGrantAbilityConfigsProp()
+	{
+		return FindFProperty<FArrayProperty>(
+			UAbilitiesGameplayEffectComponent::StaticClass(),
+			TEXT("GrantAbilityConfigs"));
 	}
 
 	// ------------------------------------------------------------------
@@ -505,6 +838,18 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleCommand(
 	{
 		return HandleSetGameplayEffectInheritedTags(Params);
 	}
+	// P2
+	if (CommandType == TEXT("list_gameplay_effects"))            return HandleListGameplayEffects(Params);
+	if (CommandType == TEXT("delete_gameplay_effect"))           return HandleDeleteGameplayEffect(Params);
+	if (CommandType == TEXT("add_gameplay_effect_cue"))          return HandleAddGameplayEffectCue(Params);
+	if (CommandType == TEXT("remove_gameplay_effect_cue"))       return HandleRemoveGameplayEffectCue(Params);
+	if (CommandType == TEXT("set_gameplay_effect_cue"))          return HandleSetGameplayEffectCue(Params);
+	if (CommandType == TEXT("set_gameplay_effect_tag_requirements")) return HandleSetGameplayEffectTagRequirements(Params);
+	if (CommandType == TEXT("set_gameplay_effect_chance_to_apply"))  return HandleSetGameplayEffectChanceToApply(Params);
+	if (CommandType == TEXT("add_gameplay_effect_granted_ability"))  return HandleAddGameplayEffectGrantedAbility(Params);
+	if (CommandType == TEXT("remove_gameplay_effect_granted_ability")) return HandleRemoveGameplayEffectGrantedAbility(Params);
+	if (CommandType == TEXT("set_gameplay_effect_granted_ability"))  return HandleSetGameplayEffectGrantedAbility(Params);
+
 	return FUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown GameplayEffect command: %s"), *CommandType));
 }
@@ -564,9 +909,18 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleGetGameplayEffec
 		Result->SetArrayField(TEXT("modifiers"), Arr);
 	}
 
-	// --- Counts (details deferred to P2) ------------------------------------
+	// --- Executions (count only — full read deferred to P3) -----------------
 	Result->SetNumberField(TEXT("executions_count"), GE->Executions.Num());
-	Result->SetNumberField(TEXT("gameplay_cues_count"), GE->GameplayCues.Num());
+
+	// --- GameplayCues (full detail, P2) -------------------------------------
+	{
+		TArray<TSharedPtr<FJsonValue>> Arr;
+		for (const FGameplayEffectCue& Cue : GE->GameplayCues)
+		{
+			Arr.Add(MakeShared<FJsonValueObject>(GECueToJson(Cue)));
+		}
+		Result->SetArrayField(TEXT("gameplay_cues"), Arr);
+	}
 
 	// --- Stacking -----------------------------------------------------------
 	{
@@ -640,6 +994,70 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleGetGameplayEffec
 		}, /*bIncludeNestedObjects=*/ false);
 		Result->SetArrayField(TEXT("components"), Arr);
 		Result->SetNumberField(TEXT("components_count"), Arr.Num());
+	}
+
+	// --- P2: Tag Requirements (Application / Ongoing / Removal) -------------
+	{
+		TSharedPtr<FJsonObject> TR = MakeShared<FJsonObject>();
+		if (const UTargetTagRequirementsGameplayEffectComponent* Comp =
+			GE->FindComponent<UTargetTagRequirementsGameplayEffectComponent>())
+		{
+			TR->SetObjectField(TEXT("application"), GETagRequirementsToJson(Comp->ApplicationTagRequirements));
+			TR->SetObjectField(TEXT("ongoing"),     GETagRequirementsToJson(Comp->OngoingTagRequirements));
+			TR->SetObjectField(TEXT("removal"),     GETagRequirementsToJson(Comp->RemovalTagRequirements));
+		}
+		else
+		{
+			FGameplayTagRequirements Empty;
+			TR->SetObjectField(TEXT("application"), GETagRequirementsToJson(Empty));
+			TR->SetObjectField(TEXT("ongoing"),     GETagRequirementsToJson(Empty));
+			TR->SetObjectField(TEXT("removal"),     GETagRequirementsToJson(Empty));
+		}
+		Result->SetObjectField(TEXT("tag_requirements"), TR);
+	}
+
+	// --- P2: Chance To Apply ------------------------------------------------
+	if (const UChanceToApplyGameplayEffectComponent* Comp =
+		GE->FindComponent<UChanceToApplyGameplayEffectComponent>())
+	{
+		Result->SetObjectField(TEXT("chance_to_apply"),
+			GEScalableFloatToJson(Comp->GetChanceToApplyToTarget()));
+	}
+
+	// --- P2: Granted Abilities ---------------------------------------------
+	{
+		TArray<TSharedPtr<FJsonValue>> Arr;
+		if (const UAbilitiesGameplayEffectComponent* Comp =
+			GE->FindComponent<UAbilitiesGameplayEffectComponent>())
+		{
+			if (FArrayProperty* ArrayProp = GEFindGrantAbilityConfigsProp())
+			{
+				FScriptArrayHelper Helper(ArrayProp,
+					ArrayProp->ContainerPtrToValuePtr<void>(Comp));
+				for (int32 I = 0; I < Helper.Num(); ++I)
+				{
+					const FGameplayAbilitySpecConfig* C =
+						reinterpret_cast<const FGameplayAbilitySpecConfig*>(Helper.GetRawPtr(I));
+					Arr.Add(MakeShared<FJsonValueObject>(GEAbilitySpecConfigToJson(*C)));
+				}
+			}
+		}
+		Result->SetArrayField(TEXT("granted_abilities"), Arr);
+	}
+
+	// --- P2: Immunity / RemoveOther counts (full detail deferred to P3) -----
+	{
+		int32 ImmunityCount = 0, RemoveOtherCount = 0;
+		if (const UImmunityGameplayEffectComponent* Comp = GE->FindComponent<UImmunityGameplayEffectComponent>())
+		{
+			ImmunityCount = Comp->ImmunityQueries.Num();
+		}
+		if (const URemoveOtherGameplayEffectComponent* Comp = GE->FindComponent<URemoveOtherGameplayEffectComponent>())
+		{
+			RemoveOtherCount = Comp->RemoveGameplayEffectQueries.Num();
+		}
+		Result->SetNumberField(TEXT("immunity_queries_count"), ImmunityCount);
+		Result->SetNumberField(TEXT("remove_other_queries_count"), RemoveOtherCount);
 	}
 
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
@@ -921,6 +1339,14 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffec
 	if (!GEParseMagnitude(*MagObj, Mod.ModifierMagnitude, Err))
 		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
 
+	// [LEOCC] P2: optional source/target tag requirements at add time.
+	const TSharedPtr<FJsonObject>* SrcTagsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("source_tags"), SrcTagsObj) && SrcTagsObj && (*SrcTagsObj).IsValid())
+		GEParseTagRequirements(*SrcTagsObj, Mod.SourceTags);
+	const TSharedPtr<FJsonObject>* TgtTagsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("target_tags"), TgtTagsObj) && TgtTagsObj && (*TgtTagsObj).IsValid())
+		GEParseTagRequirements(*TgtTagsObj, Mod.TargetTags);
+
 	GE->Modifiers.Add(Mod);
 	GEMarkBlueprintModified(BP);
 
@@ -1009,6 +1435,13 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 		if (!GEParseMagnitude(*MagObj, Mod.ModifierMagnitude, Err))
 			return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
 	}
+	// [LEOCC] P2: optional source/target tag requirements at set time (partial update).
+	const TSharedPtr<FJsonObject>* SrcTagsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("source_tags"), SrcTagsObj) && SrcTagsObj && (*SrcTagsObj).IsValid())
+		GEParseTagRequirements(*SrcTagsObj, Mod.SourceTags);
+	const TSharedPtr<FJsonObject>* TgtTagsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("target_tags"), TgtTagsObj) && TgtTagsObj && (*TgtTagsObj).IsValid())
+		GEParseTagRequirements(*TgtTagsObj, Mod.TargetTags);
 
 	GEMarkBlueprintModified(BP);
 
@@ -1093,5 +1526,402 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
 	Result->SetBoolField(TEXT("granted_changed"), GrantedObj != nullptr);
 	Result->SetBoolField(TEXT("asset_changed"), AssetObj != nullptr);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// =============================================================================
+// P2 implementations (2026-06-03 second pass)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// list_gameplay_effects(path_filter?)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleListGameplayEffects(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString PathFilter;
+	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+	FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AR = ARM.Get();
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	if (!PathFilter.IsEmpty())
+	{
+		Filter.PackagePaths.Add(*PathFilter);
+		Filter.bRecursivePaths = true;
+	}
+
+	TArray<FAssetData> Hits;
+	AR.GetAssets(Filter, Hits);
+
+	TArray<TSharedPtr<FJsonValue>> Arr;
+	for (const FAssetData& AD : Hits)
+	{
+		// Use the asset registry's NativeParentClass tag to filter without loading.
+		const FString ParentClass = AD.GetTagValueRef<FString>(TEXT("ParentClass"));
+		const FString NativeParent = AD.GetTagValueRef<FString>(TEXT("NativeParentClass"));
+		const bool bIsGE =
+			ParentClass.Contains(TEXT("GameplayEffect")) ||
+			NativeParent.Contains(TEXT("GameplayEffect"));
+		if (!bIsGE) continue;
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("asset_path"), AD.GetObjectPathString());
+		Entry->SetStringField(TEXT("name"), AD.AssetName.ToString());
+		Entry->SetStringField(TEXT("package_path"), AD.PackagePath.ToString());
+		Entry->SetStringField(TEXT("parent_class"), ParentClass.IsEmpty() ? NativeParent : ParentClass);
+		Arr.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetArrayField(TEXT("gameplay_effects"), Arr);
+	Result->SetNumberField(TEXT("count"), Arr.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// delete_gameplay_effect(asset_path)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleDeleteGameplayEffect(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+	if (!BP)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Refusing to delete a native UGameplayEffect — only blueprint GE assets are deletable"));
+
+	const FString DeletedPath = BP->GetPathName();
+	TArray<UObject*> Targets{ BP };
+	const int32 NumDeleted = ObjectTools::ForceDeleteObjects(Targets, /*bShowConfirmation=*/false);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), DeletedPath);
+	Result->SetNumberField(TEXT("num_deleted"), NumDeleted);
+	Result->SetBoolField(TEXT("success"), NumDeleted > 0);
+	return NumDeleted > 0
+		? FUnrealMCPCommonUtils::CreateSuccessResponse(Result)
+		: FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Delete failed for %s"), *DeletedPath));
+}
+
+// -----------------------------------------------------------------------------
+// add_gameplay_effect_cue(asset_path, cue_tags, min_level?, max_level?, magnitude_attribute?)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffectCue(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	FGameplayEffectCue Cue;
+	FString Err;
+	if (!GEParseGameplayEffectCue(Params, Cue, Err))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+
+	GE->GameplayCues.Add(Cue);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("index"), GE->GameplayCues.Num() - 1);
+	Result->SetNumberField(TEXT("cues_count"), GE->GameplayCues.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// remove_gameplay_effect_cue(asset_path, index)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleRemoveGameplayEffectCue(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	int32 Index = -1;
+	if (!Params->TryGetNumberField(TEXT("index"), Index))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+	if (Index < 0 || Index >= GE->GameplayCues.Num())
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Cue index out of range: %d (count=%d)"), Index, GE->GameplayCues.Num()));
+
+	GE->GameplayCues.RemoveAt(Index);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("cues_count"), GE->GameplayCues.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// set_gameplay_effect_cue(asset_path, index, [cue_tags?, min_level?, max_level?, magnitude_attribute?])
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffectCue(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	int32 Index = -1;
+	if (!Params->TryGetNumberField(TEXT("index"), Index))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+	if (Index < 0 || Index >= GE->GameplayCues.Num())
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Cue index out of range: %d (count=%d)"), Index, GE->GameplayCues.Num()));
+
+	FString Err;
+	if (!GEParseGameplayEffectCue(Params, GE->GameplayCues[Index], Err))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("index"), Index);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// set_gameplay_effect_tag_requirements(asset_path, application?, ongoing?, removal?)
+//   - Each channel is { required: [...], ignored: [...] }; missing channel = no change.
+//   - Missing `required` or `ignored` inside a channel = keep existing value.
+//   - Uses UTargetTagRequirementsGameplayEffectComponent (UE 5.3+).
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffectTagRequirements(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	UTargetTagRequirementsGameplayEffectComponent& Comp =
+		GE->FindOrAddComponent<UTargetTagRequirementsGameplayEffectComponent>();
+
+	bool bChanged = false;
+	const TSharedPtr<FJsonObject>* AppObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("application"), AppObj) && AppObj && (*AppObj).IsValid())
+		bChanged |= GEParseTagRequirements(*AppObj, Comp.ApplicationTagRequirements);
+	const TSharedPtr<FJsonObject>* OngObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("ongoing"), OngObj) && OngObj && (*OngObj).IsValid())
+		bChanged |= GEParseTagRequirements(*OngObj, Comp.OngoingTagRequirements);
+	const TSharedPtr<FJsonObject>* RemObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("removal"), RemObj) && RemObj && (*RemObj).IsValid())
+		bChanged |= GEParseTagRequirements(*RemObj, Comp.RemovalTagRequirements);
+
+	if (!bChanged)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("None of 'application' / 'ongoing' / 'removal' channels were provided"));
+
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetBoolField(TEXT("application_changed"), AppObj != nullptr);
+	Result->SetBoolField(TEXT("ongoing_changed"),     OngObj != nullptr);
+	Result->SetBoolField(TEXT("removal_changed"),     RemObj != nullptr);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// set_gameplay_effect_chance_to_apply(asset_path, scalable_float | number)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffectChanceToApply(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	// Accept either {scalable_float:{...}}, {value:...}, or a top-level number.
+	TSharedPtr<FJsonValue> ValField = Params->TryGetField(TEXT("scalable_float"));
+	if (!ValField.IsValid()) ValField = Params->TryGetField(TEXT("value"));
+	FScalableFloat SF = GEParseScalableFloatFromValue(ValField);
+	if (!ValField.IsValid())
+	{
+		// Allow flat: { asset_path, calculation?, value? }
+		SF = GEParseScalableFloat(Params);
+	}
+
+	UChanceToApplyGameplayEffectComponent& Comp =
+		GE->FindOrAddComponent<UChanceToApplyGameplayEffectComponent>();
+	Comp.SetChanceToApplyToTarget(SF);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetObjectField(TEXT("chance_to_apply"), GEScalableFloatToJson(SF));
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// add_gameplay_effect_granted_ability(asset_path, ability_class, level?, input_id?, removal_policy?)
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffectGrantedAbility(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	FGameplayAbilitySpecConfig Cfg;
+	FString Err;
+	if (!GEParseAbilitySpecConfig(Params, Cfg, Err))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+	if (!Cfg.Ability)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'ability_class'"));
+
+	UAbilitiesGameplayEffectComponent& Comp =
+		GE->FindOrAddComponent<UAbilitiesGameplayEffectComponent>();
+	Comp.AddGrantedAbilityConfig(Cfg);
+	GEMarkBlueprintModified(BP);
+
+	int32 NewCount = 0;
+	if (FArrayProperty* ArrayProp = GEFindGrantAbilityConfigsProp())
+	{
+		FScriptArrayHelper Helper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(&Comp));
+		NewCount = Helper.Num();
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("granted_abilities_count"), NewCount);
+	Result->SetNumberField(TEXT("index"), NewCount - 1);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// remove_gameplay_effect_granted_ability(asset_path, index)
+//   Removes via FArrayProperty reflection (GrantAbilityConfigs is protected).
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleRemoveGameplayEffectGrantedAbility(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	int32 Index = -1;
+	if (!Params->TryGetNumberField(TEXT("index"), Index))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	UAbilitiesGameplayEffectComponent* Comp =
+		const_cast<UAbilitiesGameplayEffectComponent*>(GE->FindComponent<UAbilitiesGameplayEffectComponent>());
+	if (!Comp)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("No AbilitiesGameplayEffectComponent attached"));
+
+	FArrayProperty* ArrayProp = GEFindGrantAbilityConfigsProp();
+	if (!ArrayProp)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("GrantAbilityConfigs property reflection failed"));
+
+	FScriptArrayHelper Helper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Comp));
+	if (Index < 0 || Index >= Helper.Num())
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Granted ability index out of range: %d (count=%d)"), Index, Helper.Num()));
+
+	Helper.RemoveValues(Index, 1);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("granted_abilities_count"), Helper.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+// -----------------------------------------------------------------------------
+// set_gameplay_effect_granted_ability(asset_path, index, [ability_class?, level?, input_id?, removal_policy?])
+// -----------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffectGrantedAbility(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	int32 Index = -1;
+	if (!Params->TryGetNumberField(TEXT("index"), Index))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'index'"));
+
+	UBlueprint* BP = nullptr;
+	UGameplayEffect* GE = GEFindCDO(AssetPath, &BP);
+	if (!GE)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not a GameplayEffect: %s"), *AssetPath));
+
+	UAbilitiesGameplayEffectComponent* Comp =
+		const_cast<UAbilitiesGameplayEffectComponent*>(GE->FindComponent<UAbilitiesGameplayEffectComponent>());
+	if (!Comp)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("No AbilitiesGameplayEffectComponent attached"));
+
+	FArrayProperty* ArrayProp = GEFindGrantAbilityConfigsProp();
+	if (!ArrayProp)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("GrantAbilityConfigs property reflection failed"));
+
+	FScriptArrayHelper Helper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(Comp));
+	if (Index < 0 || Index >= Helper.Num())
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Granted ability index out of range: %d (count=%d)"), Index, Helper.Num()));
+
+	FGameplayAbilitySpecConfig* Existing =
+		reinterpret_cast<FGameplayAbilitySpecConfig*>(Helper.GetRawPtr(Index));
+	FString Err;
+	if (!GEParseAbilitySpecConfig(Params, *Existing, Err))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+	GEMarkBlueprintModified(BP);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
+	Result->SetNumberField(TEXT("index"), Index);
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
 }

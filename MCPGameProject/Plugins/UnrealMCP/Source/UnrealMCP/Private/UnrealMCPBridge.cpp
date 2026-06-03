@@ -488,15 +488,26 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             {
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }
-            // GameplayEffect Commands (LT14 P0+P1, 2026-06-03)
+            // GameplayEffect Commands (LT14 P0+P1+P2, 2026-06-03)
             // P0: read + create  |  P1: set property / modifier CRUD / inherited tags
+            // P2: list / delete / cue CRUD / tag_requirements / chance_to_apply / granted ability CRUD
             else if (CommandType == TEXT("get_gameplay_effect_info") ||
                      CommandType == TEXT("create_gameplay_effect") ||
                      CommandType == TEXT("set_gameplay_effect_property") ||
                      CommandType == TEXT("add_gameplay_effect_modifier") ||
                      CommandType == TEXT("remove_gameplay_effect_modifier") ||
                      CommandType == TEXT("set_gameplay_effect_modifier") ||
-                     CommandType == TEXT("set_gameplay_effect_inherited_tags"))
+                     CommandType == TEXT("set_gameplay_effect_inherited_tags") ||
+                     CommandType == TEXT("list_gameplay_effects") ||
+                     CommandType == TEXT("delete_gameplay_effect") ||
+                     CommandType == TEXT("add_gameplay_effect_cue") ||
+                     CommandType == TEXT("remove_gameplay_effect_cue") ||
+                     CommandType == TEXT("set_gameplay_effect_cue") ||
+                     CommandType == TEXT("set_gameplay_effect_tag_requirements") ||
+                     CommandType == TEXT("set_gameplay_effect_chance_to_apply") ||
+                     CommandType == TEXT("add_gameplay_effect_granted_ability") ||
+                     CommandType == TEXT("remove_gameplay_effect_granted_ability") ||
+                     CommandType == TEXT("set_gameplay_effect_granted_ability"))
             {
                 ResultJson = GameplayEffectCommands->HandleCommand(CommandType, Params);
             }
