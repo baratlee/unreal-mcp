@@ -53,7 +53,9 @@ public class UnrealMCP : ModuleRules
 				"BlueprintGraph",
 				"Projects",
 				"AssetRegistry",
-				"Niagara"              // For UNiagaraSystem read-only inspection (LT12)
+				"Niagara",             // For UNiagaraSystem read-only inspection (LT12)
+				"GameplayAbilities",   // For UGameplayEffect / FGameplayModifierInfo / GE Components (LT14)
+				"GameplayTags"         // For FGameplayTag / FInheritedTagContainer (LT14)
 			}
 		);
 
@@ -74,8 +76,7 @@ public class UnrealMCP : ModuleRules
 					"EnhancedInput",       // For UInputAction / UInputMappingContext read-only inspection
 					"PoseSearch",          // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
 					"StateTreeModule",     // For UStateTree / UStateTreeSchema runtime types
-					"StateTreeEditorModule", // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
-					"GameplayTags"         // For FGameplayTag::StaticStruct used in StateTree property serialization
+					"StateTreeEditorModule" // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
 				}
 			);
 		}

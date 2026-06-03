@@ -63,6 +63,7 @@
 #include "Commands/UnrealMCPMaterialCommands.h"
 #include "Commands/UnrealMCPSplineCommands.h"
 #include "Commands/UnrealMCPNiagaraCommands.h"
+#include "Commands/UnrealMCPGameplayEffectCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -114,6 +115,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
     SplineCommands = MakeShared<FUnrealMCPSplineCommands>();
     NiagaraCommands = MakeShared<FUnrealMCPNiagaraCommands>();
+    GameplayEffectCommands = MakeShared<FUnrealMCPGameplayEffectCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -129,6 +131,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     MaterialCommands.Reset();
     SplineCommands.Reset();
     NiagaraCommands.Reset();
+    GameplayEffectCommands.Reset();
 }
 
 // Initialize subsystem
@@ -484,6 +487,18 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_niagara_emitter_renderers"))
             {
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
+            }
+            // GameplayEffect Commands (LT14 P0+P1, 2026-06-03)
+            // P0: read + create  |  P1: set property / modifier CRUD / inherited tags
+            else if (CommandType == TEXT("get_gameplay_effect_info") ||
+                     CommandType == TEXT("create_gameplay_effect") ||
+                     CommandType == TEXT("set_gameplay_effect_property") ||
+                     CommandType == TEXT("add_gameplay_effect_modifier") ||
+                     CommandType == TEXT("remove_gameplay_effect_modifier") ||
+                     CommandType == TEXT("set_gameplay_effect_modifier") ||
+                     CommandType == TEXT("set_gameplay_effect_inherited_tags"))
+            {
+                ResultJson = GameplayEffectCommands->HandleCommand(CommandType, Params);
             }
             else
             {

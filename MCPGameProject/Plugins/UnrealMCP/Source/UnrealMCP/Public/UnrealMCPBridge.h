@@ -19,6 +19,7 @@
 #include "Commands/UnrealMCPMaterialCommands.h"
 #include "Commands/UnrealMCPSplineCommands.h"
 #include "Commands/UnrealMCPNiagaraCommands.h"
+#include "Commands/UnrealMCPGameplayEffectCommands.h"
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -73,4 +74,5 @@ private:
 	TSharedPtr<FUnrealMCPMaterialCommands> MaterialCommands;
 	TSharedPtr<FUnrealMCPSplineCommands> SplineCommands;
 	TSharedPtr<FUnrealMCPNiagaraCommands> NiagaraCommands;
+	TSharedPtr<FUnrealMCPGameplayEffectCommands> GameplayEffectCommands;
 };
