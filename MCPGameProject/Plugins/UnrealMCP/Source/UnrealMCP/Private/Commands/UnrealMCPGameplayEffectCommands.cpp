@@ -484,8 +484,15 @@ namespace
 	// Mark blueprint as modified after CDO edit. CDO-only changes don't need
 	// MarkBlueprintAsStructurallyModified (that's for graphs); package dirty +
 	// MarkBlueprintAsModified is sufficient.
-	void GEMarkBlueprintModified(UBlueprint* BP)
+	// [LEOCC] 增补：写到 GE CDO 或其子组件 Component 后必须 PostEditChange，否则 reload 时
+	// BP 重实例化机制不认这是"显式编辑"，可能丢 instance/subobject 改动。WrittenObject 可传
+	// GE 本身、其 Component、或具体子对象。
+	void GEMarkBlueprintModified(UBlueprint* BP, UObject* WrittenObject = nullptr)
 	{
+		if (WrittenObject)
+		{
+			FUnrealMCPCommonUtils::NotifyPropertyChanged(WrittenObject, nullptr);
+		}
 		if (!BP) return;
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 		if (UPackage* Pkg = BP->GetOutermost())
@@ -1297,7 +1304,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 			FString::Printf(TEXT("Unsupported property: %s"), *P));
 	}
 
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1348,7 +1355,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffec
 		GEParseTagRequirements(*TgtTagsObj, Mod.TargetTags);
 
 	GE->Modifiers.Add(Mod);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1381,7 +1388,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleRemoveGameplayEf
 			FString::Printf(TEXT("Modifier index out of range: %d (count=%d)"), Index, GE->Modifiers.Num()));
 
 	GE->Modifiers.RemoveAt(Index);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1443,7 +1450,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 	if (Params->TryGetObjectField(TEXT("target_tags"), TgtTagsObj) && TgtTagsObj && (*TgtTagsObj).IsValid())
 		GEParseTagRequirements(*TgtTagsObj, Mod.TargetTags);
 
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1520,7 +1527,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 			TEXT("Neither 'granted' nor 'asset' channels were provided"));
 	}
 
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1635,7 +1642,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffec
 		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
 
 	GE->GameplayCues.Add(Cue);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1667,7 +1674,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleRemoveGameplayEf
 			FString::Printf(TEXT("Cue index out of range: %d (count=%d)"), Index, GE->GameplayCues.Num()));
 
 	GE->GameplayCues.RemoveAt(Index);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1700,7 +1707,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 	FString Err;
 	if (!GEParseGameplayEffectCue(Params, GE->GameplayCues[Index], Err))
 		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1745,7 +1752,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 		return FUnrealMCPCommonUtils::CreateErrorResponse(
 			TEXT("None of 'application' / 'ongoing' / 'removal' channels were provided"));
 
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1784,7 +1791,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 	UChanceToApplyGameplayEffectComponent& Comp =
 		GE->FindOrAddComponent<UChanceToApplyGameplayEffectComponent>();
 	Comp.SetChanceToApplyToTarget(SF);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1817,7 +1824,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleAddGameplayEffec
 	UAbilitiesGameplayEffectComponent& Comp =
 		GE->FindOrAddComponent<UAbilitiesGameplayEffectComponent>();
 	Comp.AddGrantedAbilityConfig(Cfg);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	int32 NewCount = 0;
 	if (FArrayProperty* ArrayProp = GEFindGrantAbilityConfigsProp())
@@ -1870,7 +1877,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleRemoveGameplayEf
 			FString::Printf(TEXT("Granted ability index out of range: %d (count=%d)"), Index, Helper.Num()));
 
 	Helper.RemoveValues(Index, 1);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());
@@ -1918,7 +1925,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleSetGameplayEffec
 	FString Err;
 	if (!GEParseAbilitySpecConfig(Params, *Existing, Err))
 		return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
-	GEMarkBlueprintModified(BP);
+	GEMarkBlueprintModified(BP, GE);
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), GE->GetPathName());

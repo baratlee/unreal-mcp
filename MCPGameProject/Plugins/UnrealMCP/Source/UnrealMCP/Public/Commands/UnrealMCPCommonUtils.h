@@ -56,6 +56,14 @@ public:
     static UK2Node_Event* FindExistingEventNode(UEdGraph* Graph, const FString& EventName);
 
     // Property utilities
-    static bool SetObjectProperty(UObject* Object, const FString& PropertyName, 
+    static bool SetObjectProperty(UObject* Object, const FString& PropertyName,
                                  const TSharedPtr<FJsonValue>& Value, FString& OutErrorMessage);
-}; 
+
+    // [LEOCC] 写后属性变更通知：等价于 Editor Details 面板手动改完触发的通知链。
+    // 不调用就只是写了内存值，UE 不会把它当作 user-authored override：
+    //   - actor/component instance 上的 override：BP CDO 后续修改/切关卡 reload/PIE start 时会被覆盖回 CDO 值（per-instance 隐式丢失）
+    //   - BP CDO 上的修改：依赖该 BP 的资产不会自动 dirty / 重编译
+    // 当 Owner 是 UActorComponent，会同时通知 OwnerActor；当 Owner 是 BP CDO，会 MarkBlueprintAsModified。
+    static void NotifyPropertyChanged(UObject* Owner, FProperty* Prop,
+                                      EPropertyChangeType::Type ChangeType = EPropertyChangeType::ValueSet);
+};

@@ -3332,6 +3332,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabase
     {
         SchemaProp->SetObjectPropertyValue_InContainer(Database, Schema);
     }
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Database, nullptr); // [LEOCC] reload-safe notify
     Database->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3404,6 +3405,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddPoseSearchDatabase
 #endif
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Database, nullptr); // [LEOCC] reload-safe notify
     Database->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3438,6 +3440,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchDatab
 
     Database->Modify();
     ArrayHelper.RemoveValues(Index, 1);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Database, nullptr); // [LEOCC] reload-safe notify
     Database->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3478,6 +3481,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabase
 
     if (ModifiedFields.Num() > 0)
     {
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(Database, nullptr); // [LEOCC] reload-safe notify
         Database->MarkPackageDirty();
     }
 
@@ -3611,6 +3615,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchDatabase
 
     if (ModifiedFields.Num() > 0)
     {
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(Database, nullptr); // [LEOCC] reload-safe notify
         Database->MarkPackageDirty();
     }
 
@@ -3694,6 +3699,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaSe
         }
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Schema, nullptr); // [LEOCC] reload-safe notify
     Schema->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3897,6 +3903,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddPoseSearchSchemaCh
         InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(NewIndex), NewChannel);
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Schema, nullptr); // [LEOCC] reload-safe notify
     Schema->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3931,6 +3938,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemovePoseSearchSchem
 
     Schema->Modify();
     ArrayHelper.RemoveValues(Index, 1);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Schema, nullptr); // [LEOCC] reload-safe notify
     Schema->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -3981,6 +3989,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaCh
     Schema->Modify();
     ChannelObject->Modify();
     WeightProp->SetPropertyValue_InContainer(ChannelObject, Weight);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Schema, nullptr); // [LEOCC] reload-safe notify
     Schema->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4077,6 +4086,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetPoseSearchSchemaTr
 
     if (ModifiedFields.Num() > 0)
     {
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(Schema, nullptr); // [LEOCC] reload-safe notify
         Schema->MarkPackageDirty();
     }
 
@@ -4215,6 +4225,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableRow(co
         }
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4285,6 +4296,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableRow
         }
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4359,6 +4371,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationPropertie
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No recognized properties to set"));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(AnimSeq, nullptr); // [LEOCC] reload-safe notify
     AnimSeq->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4533,6 +4546,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRigRetargetRoot(
             FString::Printf(TEXT("SetRetargetRoot failed (bone may not exist on the rig's skeleton): %s"), *BoneName));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4582,6 +4596,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRigRetargetChain
                 *ChainName, *StartBone, *EndBone));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4622,6 +4637,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRigGoal(const TS
                 *GoalName, *BoneName));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4677,6 +4693,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRigSolver(const 
             FString::Printf(TEXT("AddSolver returned INDEX_NONE for type: %s"), *SolverStructName));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4884,6 +4901,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterOpEnab
             FString::Printf(TEXT("SetRetargetOpEnabled failed (invalid index?): op_index=%d"), OpIndex));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -4939,6 +4957,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterOpFiel
                 *FieldPath, *Value, *Prop->GetCPPType()));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
@@ -5005,6 +5024,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRetargeterOp(con
         }
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5057,6 +5077,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIKRetargeterPinBon
     NewEntry.BoneToCopyTo.BoneName = FName(*BoneCopyTo);
     PinOp->Settings.BonesToPin.Add(NewEntry);
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5102,6 +5123,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterChainM
                 *SourceChain, *TargetChain, *OpName.ToString()));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5151,6 +5173,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleIKRetargeterAutoMapCh
     }
 
     Ctrl->AutoMapChains(MapType, bForceRemap, OpName);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5213,6 +5236,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRetargeterRetarg
     if (!Ctrl) return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
 
     Ctrl->SetRotationOffsetForRetargetPoseBone(FName(*BoneName), Offset, SideEnum);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5425,6 +5449,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableResult
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5467,6 +5492,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableFallba
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5541,6 +5567,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableParame
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5573,6 +5600,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTablePar
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5670,6 +5698,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddChooserTableColumn
     SyncChooserColumnRowCounts(Table);
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5703,6 +5732,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveChooserTableCol
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5758,6 +5788,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableColumn
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5805,6 +5836,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableRowRes
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -5880,6 +5912,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetChooserTableRowCol
 #if WITH_EDITOR
     PostWriteChooserCompile(Table);
 #endif
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Table, nullptr); // [LEOCC] reload-safe notify
     Table->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -6766,6 +6799,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetInputActionPropert
         Changed.Add(TEXT("reserve_all_mappings"));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IA, nullptr); // [LEOCC] reload-safe notify
     IA->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -6876,6 +6910,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMapping(const T
     }
 
     IMC->MapKey(IA, Key);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     int32 MappingIndex = IMC->GetMappings().Num() - 1;
@@ -6941,6 +6976,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveIMCMapping(cons
         IMC->UnmapKey(IA, FKey(*KeyStr));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -6997,6 +7033,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMappingModifier
 
     TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);
     MutableMappings[MappingIndex].Modifiers.Add(NewMod);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7055,6 +7092,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMappingTrigger(
 
     TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);
     MutableMappings[MappingIndex].Triggers.Add(NewTrig);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7114,6 +7152,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveIMCMappingModif
     }
 
     Modifiers.RemoveAt(ModifierIndex);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7177,6 +7216,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIMCMappingModifier
             FString::Printf(TEXT("Unsupported modifier type: %s"), *Mod->GetClass()->GetName()));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7236,6 +7276,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveIMCMappingTrigg
     }
 
     Triggers.RemoveAt(TriggerIndex);
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7299,6 +7340,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIMCMappingTrigger(
             FString::Printf(TEXT("Unsupported trigger type: %s"), *Trig->GetClass()->GetName()));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(IMC, nullptr); // [LEOCC] reload-safe notify
     IMC->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7460,6 +7502,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleConnectIKRigGoalToSol
                 *GoalName, SolverIndex));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7513,6 +7556,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetIKRigSolverField(c
                 *FieldPath, *Value, *Prop->GetCPPType()));
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
@@ -7542,6 +7586,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigChain(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("RemoveRetargetChain failed (chain may not exist): %s"), *ChainName));
     }
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7569,6 +7614,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigGoal(const
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("RemoveGoal failed (goal may not exist): %s"), *GoalName));
     }
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7597,6 +7643,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleDeleteIKRigSolver(con
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("RemoveSolver failed (index out of range): solver_index=%d"), SolverIndex));
     }
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -7674,6 +7721,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleUpdateIKRigChain(cons
         if (bOK) FinalName = Renamed.ToString();
     }
 
+    FUnrealMCPCommonUtils::NotifyPropertyChanged(Ctrl->GetAsset(), nullptr); // [LEOCC] reload-safe notify
     Ctrl->GetAsset()->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();

@@ -931,6 +931,8 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleAddStateTreeState(con
 		NewState = &State;
 	}
 
+	// [LEOCC] PostEditChange 不可少：StateTree 内嵌 EditorData 改动后需通知 outer 否则 reload 后未编译态
+	FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 	StateTree->GetPackage()->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -988,6 +990,8 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleRemoveStateTreeState(
 		EditorData->SubTrees.Remove(StateToRemove);
 	}
 
+	// [LEOCC] 移除 State 后 PostEditChange，避免 reload 后 EditorData 与缓存不一致
+	FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 	StateTree->GetPackage()->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1101,6 +1105,8 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleSetStateTreeStateProp
 
 	if (bChanged)
 	{
+		// [LEOCC] State 属性改完必须 PostEditChange，否则 reload 后改动可能被缓存覆盖
+		FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 		StateTree->GetPackage()->MarkPackageDirty();
 	}
 
@@ -1192,6 +1198,8 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleAddStateTreeTask(cons
 		}
 	}
 
+	// [LEOCC] 添加 Task 节点后 PostEditChange，让 StateTree 重编译时识别新节点
+	FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 	StateTree->GetPackage()->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1328,6 +1336,8 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleAddStateTreeTransitio
 		}
 	}
 
+	// [LEOCC] 添加 Transition 后 PostEditChange，避免下次重编译用旧 Transition 表
+	FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 	StateTree->GetPackage()->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1424,6 +1434,9 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleSetStateTreeNodePrope
 		return FUnrealMCPCommonUtils::CreateErrorResponse(ErrorMsg);
 	}
 
+	// [LEOCC] InstancedStruct 内多字段写入后必须通知 outer StateTree，否则 reload 会丢；
+	// PostEditChange() 通用通知足够，无需精确到 property（写入发生在嵌套 FInstancedStruct 数据内）
+	FUnrealMCPCommonUtils::NotifyPropertyChanged(StateTree, nullptr);
 	StateTree->GetPackage()->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();

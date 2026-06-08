@@ -3171,7 +3171,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodePrope
         }
 
         BindStruct->DestroyStruct(ScratchBuf.GetData());
-        BindObjLocal->Modify();
+        // [LEOCC] AnimGraphNode 上的 Binding 子对象写完 PropertyBindings TMap 后必须 PostEditChange，
+        // 否则 AnimGraphNode 重编译会忽略此次 binding 变化
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(BindObjLocal, nullptr);
 
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
         Entry->SetStringField(TEXT("mode"), TEXT("binding_set"));
@@ -3191,7 +3193,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodePrope
         FScriptMapHelper MapHelper(MapProp, MapCont);
         const FName Key = FName(*ClearName);
         const bool bRemoved = MapHelper.RemovePair(&Key);
-        BindObjLocal->Modify();
+        // [LEOCC] 同 binding_set：清除后也必须 PostEditChange
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(BindObjLocal, nullptr);
 
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
         Entry->SetStringField(TEXT("mode"), TEXT("binding_clear"));
@@ -3203,7 +3206,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodePrope
 
     if (bAnyChange)
     {
-        AnimNode->Modify();
+        // [LEOCC] 用 NotifyPropertyChanged 取代裸 Modify，确保 AnimNode 的 PostEditChange 也被触发；
+        // ReconstructNode 只重建图，不会替代 PEC 的 instance-edit 簿记
+        FUnrealMCPCommonUtils::NotifyPropertyChanged(AnimNode, nullptr);
         AnimNode->ReconstructNode();
         FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
     }

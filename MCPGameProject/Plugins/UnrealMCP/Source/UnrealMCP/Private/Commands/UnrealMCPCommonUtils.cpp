@@ -563,7 +563,7 @@ UK2Node_Event* FUnrealMCPCommonUtils::FindExistingEventNode(UEdGraph* Graph, con
     return nullptr;
 }
 
-bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& PropertyName, 
+bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& PropertyName,
                                      const TSharedPtr<FJsonValue>& Value, FString& OutErrorMessage)
 {
     if (!Object)
@@ -580,206 +580,273 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
     }
 
     void* PropertyAddr = Property->ContainerPtrToValuePtr<void>(Object);
-    
-    // Handle different property types
-    if (Property->IsA<FBoolProperty>())
+
+    // [LEOCC] do{...}while(0) 包裹类型分发：成功路径置 bWritten=true + break，统一在函数末尾走
+    // NotifyPropertyChanged，让 UE 把 actor/component instance 的写入登记为 user-authored override；
+    // 否则 BP CDO 修改后 / 切关卡 reload / PIE start 都会把 MCP 写的值清掉。
+    bool bWritten = false;
+
+    do
     {
-        ((FBoolProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsBool());
-        return true;
-    }
-    else if (Property->IsA<FIntProperty>())
-    {
-        int32 IntValue = static_cast<int32>(Value->AsNumber());
-        FIntProperty* IntProperty = CastField<FIntProperty>(Property);
-        if (IntProperty)
+        if (Property->IsA<FBoolProperty>())
         {
-            IntProperty->SetPropertyValue_InContainer(Object, IntValue);
-            return true;
+            ((FBoolProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsBool());
+            bWritten = true; break;
         }
-    }
-    else if (Property->IsA<FFloatProperty>())
-    {
-        ((FFloatProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsNumber());
-        return true;
-    }
-    else if (Property->IsA<FStrProperty>())
-    {
-        ((FStrProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsString());
-        return true;
-    }
-    else if (Property->IsA<FByteProperty>())
-    {
-        FByteProperty* ByteProp = CastField<FByteProperty>(Property);
-        UEnum* EnumDef = ByteProp ? ByteProp->GetIntPropertyEnum() : nullptr;
-        
-        // If this is a TEnumAsByte property (has associated enum)
-        if (EnumDef)
+        else if (Property->IsA<FIntProperty>())
         {
-            // Handle numeric value
-            if (Value->Type == EJson::Number)
+            int32 IntValue = static_cast<int32>(Value->AsNumber());
+            FIntProperty* IntProperty = CastField<FIntProperty>(Property);
+            if (IntProperty)
             {
+                IntProperty->SetPropertyValue_InContainer(Object, IntValue);
+                bWritten = true; break;
+            }
+        }
+        else if (Property->IsA<FFloatProperty>())
+        {
+            ((FFloatProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsNumber());
+            bWritten = true; break;
+        }
+        else if (Property->IsA<FStrProperty>())
+        {
+            ((FStrProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsString());
+            bWritten = true; break;
+        }
+        else if (Property->IsA<FByteProperty>())
+        {
+            FByteProperty* ByteProp = CastField<FByteProperty>(Property);
+            UEnum* EnumDef = ByteProp ? ByteProp->GetIntPropertyEnum() : nullptr;
+
+            // If this is a TEnumAsByte property (has associated enum)
+            if (EnumDef)
+            {
+                // Handle numeric value
+                if (Value->Type == EJson::Number)
+                {
+                    uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
+                    ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %d"),
+                          *PropertyName, ByteValue);
+                    bWritten = true; break;
+                }
+                // Handle string enum value
+                else if (Value->Type == EJson::String)
+                {
+                    FString EnumValueName = Value->AsString();
+
+                    // Try to convert numeric string to number first
+                    if (EnumValueName.IsNumeric())
+                    {
+                        uint8 ByteValue = FCString::Atoi(*EnumValueName);
+                        ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
+
+                        UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %d"),
+                              *PropertyName, *EnumValueName, ByteValue);
+                        bWritten = true; break;
+                    }
+
+                    // Handle qualified enum names (e.g., "Player0" or "EAutoReceiveInput::Player0")
+                    if (EnumValueName.Contains(TEXT("::")))
+                    {
+                        EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
+                    }
+
+                    int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
+                    if (EnumValue == INDEX_NONE)
+                    {
+                        // Try with full name as fallback
+                        EnumValue = EnumDef->GetValueByNameString(Value->AsString());
+                    }
+
+                    if (EnumValue != INDEX_NONE)
+                    {
+                        ByteProp->SetPropertyValue(PropertyAddr, static_cast<uint8>(EnumValue));
+
+                        UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"),
+                              *PropertyName, *EnumValueName, EnumValue);
+                        bWritten = true; break;
+                    }
+                    else
+                    {
+                        // Log all possible enum values for debugging
+                        UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
+                        for (int32 i = 0; i < EnumDef->NumEnums(); i++)
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"),
+                                   *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
+                        }
+
+                        OutErrorMessage = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                // Regular byte property
                 uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
                 ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
-                
-                UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %d"), 
-                      *PropertyName, ByteValue);
-                return true;
+                bWritten = true; break;
             }
-            // Handle string enum value
-            else if (Value->Type == EJson::String)
+        }
+        else if (Property->IsA<FEnumProperty>())
+        {
+            FEnumProperty* EnumProp = CastField<FEnumProperty>(Property);
+            UEnum* EnumDef = EnumProp ? EnumProp->GetEnum() : nullptr;
+            FNumericProperty* UnderlyingNumericProp = EnumProp ? EnumProp->GetUnderlyingProperty() : nullptr;
+
+            if (EnumDef && UnderlyingNumericProp)
             {
-                FString EnumValueName = Value->AsString();
-                
-                // Try to convert numeric string to number first
-                if (EnumValueName.IsNumeric())
+                // Handle numeric value
+                if (Value->Type == EJson::Number)
                 {
-                    uint8 ByteValue = FCString::Atoi(*EnumValueName);
-                    ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
-                    
-                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %d"), 
-                          *PropertyName, *EnumValueName, ByteValue);
-                    return true;
+                    int64 EnumValue = static_cast<int64>(Value->AsNumber());
+                    UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %lld"),
+                          *PropertyName, EnumValue);
+                    bWritten = true; break;
                 }
-                
-                // Handle qualified enum names (e.g., "Player0" or "EAutoReceiveInput::Player0")
-                if (EnumValueName.Contains(TEXT("::")))
+                // Handle string enum value
+                else if (Value->Type == EJson::String)
                 {
-                    EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
-                }
-                
-                int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
-                if (EnumValue == INDEX_NONE)
-                {
-                    // Try with full name as fallback
-                    EnumValue = EnumDef->GetValueByNameString(Value->AsString());
-                }
-                
-                if (EnumValue != INDEX_NONE)
-                {
-                    ByteProp->SetPropertyValue(PropertyAddr, static_cast<uint8>(EnumValue));
-                    
-                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"), 
-                          *PropertyName, *EnumValueName, EnumValue);
-                    return true;
-                }
-                else
-                {
-                    // Log all possible enum values for debugging
-                    UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
-                    for (int32 i = 0; i < EnumDef->NumEnums(); i++)
+                    FString EnumValueName = Value->AsString();
+
+                    // Try to convert numeric string to number first
+                    if (EnumValueName.IsNumeric())
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"), 
-                               *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
+                        int64 EnumValue = FCString::Atoi64(*EnumValueName);
+                        UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                        UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %lld"),
+                              *PropertyName, *EnumValueName, EnumValue);
+                        bWritten = true; break;
                     }
-                    
-                    OutErrorMessage = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
-                    return false;
+
+                    // Handle qualified enum names
+                    if (EnumValueName.Contains(TEXT("::")))
+                    {
+                        EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
+                    }
+
+                    int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
+                    if (EnumValue == INDEX_NONE)
+                    {
+                        // Try with full name as fallback
+                        EnumValue = EnumDef->GetValueByNameString(Value->AsString());
+                    }
+
+                    if (EnumValue != INDEX_NONE)
+                    {
+                        UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
+
+                        UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"),
+                              *PropertyName, *EnumValueName, EnumValue);
+                        bWritten = true; break;
+                    }
+                    else
+                    {
+                        // Log all possible enum values for debugging
+                        UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
+                        for (int32 i = 0; i < EnumDef->NumEnums(); i++)
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"),
+                                   *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
+                        }
+
+                        OutErrorMessage = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
+                        return false;
+                    }
                 }
             }
         }
-        else
+
+        // Generic fallback: use ImportText to parse T3D-format strings.
+        // Covers FStructProperty, FNameProperty, FTextProperty, FDoubleProperty,
+        // FSoftObjectProperty, FObjectProperty, and any other type that supports
+        // text import (which is the format ExportTextItem_Direct produces).
+        if (Value->Type == EJson::String)
         {
-            // Regular byte property
-            uint8 ByteValue = static_cast<uint8>(Value->AsNumber());
-            ByteProp->SetPropertyValue(PropertyAddr, ByteValue);
-            return true;
+            FString TextValue = Value->AsString();
+            const TCHAR* Buffer = *TextValue;
+            const TCHAR* Result = Property->ImportText_Direct(Buffer, PropertyAddr, Object, PPF_None);
+            if (Result)
+            {
+                UE_LOG(LogTemp, Display, TEXT("Set property %s via ImportText"), *PropertyName);
+                bWritten = true; break;
+            }
+            else
+            {
+                OutErrorMessage = FString::Printf(TEXT("ImportText failed for property %s (type: %s). Value: %s"),
+                    *PropertyName, *Property->GetClass()->GetName(), *TextValue);
+                return false;
+            }
+        }
+    } while (false);
+
+    if (!bWritten)
+    {
+        OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"),
+                                        *Property->GetClass()->GetName(), *PropertyName);
+        return false;
+    }
+
+    // [LEOCC] 关键修复：写完必须走 UE 通知链，否则 instance override 不会被登记
+    NotifyPropertyChanged(Object, Property);
+    return true;
+}
+
+void FUnrealMCPCommonUtils::NotifyPropertyChanged(UObject* Owner, FProperty* Prop, EPropertyChangeType::Type ChangeType)
+{
+    // [LEOCC] 写完属性后必须调，否则 instance override 不会被 UE 标记 → reload 丢失。
+    // Prop != nullptr：精确通知单条属性。Prop == nullptr：兜底通用通知（PostEditChange()），用于"一函数批改多属性"场景。
+    // 当 Owner 是 UActorComponent，会同时通知 OwnerActor（BP 实例化机制依赖 actor PEC 才会保留 component instance override）；
+    // 当 Owner 是 BP CDO，会 MarkBlueprintAsModified 触发后续重编译保留改动。
+    if (!Owner)
+    {
+        return;
+    }
+
+    Owner->Modify();
+
+    if (Prop)
+    {
+        FPropertyChangedEvent ChangedEvent(Prop, ChangeType);
+        Owner->PostEditChangeProperty(ChangedEvent);
+
+        if (UActorComponent* Comp = Cast<UActorComponent>(Owner))
+        {
+            if (AActor* OwnerActor = Comp->GetOwner())
+            {
+                OwnerActor->Modify();
+                OwnerActor->PostEditChangeProperty(ChangedEvent);
+            }
         }
     }
-    else if (Property->IsA<FEnumProperty>())
+    else
     {
-        FEnumProperty* EnumProp = CastField<FEnumProperty>(Property);
-        UEnum* EnumDef = EnumProp ? EnumProp->GetEnum() : nullptr;
-        FNumericProperty* UnderlyingNumericProp = EnumProp ? EnumProp->GetUnderlyingProperty() : nullptr;
-        
-        if (EnumDef && UnderlyingNumericProp)
+        Owner->PostEditChange();
+
+        if (UActorComponent* Comp = Cast<UActorComponent>(Owner))
         {
-            // Handle numeric value
-            if (Value->Type == EJson::Number)
+            if (AActor* OwnerActor = Comp->GetOwner())
             {
-                int64 EnumValue = static_cast<int64>(Value->AsNumber());
-                UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
-                
-                UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric value: %lld"), 
-                      *PropertyName, EnumValue);
-                return true;
+                OwnerActor->Modify();
+                OwnerActor->PostEditChange();
             }
-            // Handle string enum value
-            else if (Value->Type == EJson::String)
-            {
-                FString EnumValueName = Value->AsString();
-                
-                // Try to convert numeric string to number first
-                if (EnumValueName.IsNumeric())
-                {
-                    int64 EnumValue = FCString::Atoi64(*EnumValueName);
-                    UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
-                    
-                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to numeric string value: %s -> %lld"), 
-                          *PropertyName, *EnumValueName, EnumValue);
-                    return true;
-                }
-                
-                // Handle qualified enum names
-                if (EnumValueName.Contains(TEXT("::")))
-                {
-                    EnumValueName.Split(TEXT("::"), nullptr, &EnumValueName);
-                }
-                
-                int64 EnumValue = EnumDef->GetValueByNameString(EnumValueName);
-                if (EnumValue == INDEX_NONE)
-                {
-                    // Try with full name as fallback
-                    EnumValue = EnumDef->GetValueByNameString(Value->AsString());
-                }
-                
-                if (EnumValue != INDEX_NONE)
-                {
-                    UnderlyingNumericProp->SetIntPropertyValue(PropertyAddr, EnumValue);
-                    
-                    UE_LOG(LogTemp, Display, TEXT("Setting enum property %s to name value: %s -> %lld"), 
-                          *PropertyName, *EnumValueName, EnumValue);
-                    return true;
-                }
-                else
-                {
-                    // Log all possible enum values for debugging
-                    UE_LOG(LogTemp, Warning, TEXT("Could not find enum value for '%s'. Available options:"), *EnumValueName);
-                    for (int32 i = 0; i < EnumDef->NumEnums(); i++)
-                    {
-                        UE_LOG(LogTemp, Warning, TEXT("  - %s (value: %d)"), 
-                               *EnumDef->GetNameStringByIndex(i), EnumDef->GetValueByIndex(i));
-                    }
-                    
-                    OutErrorMessage = FString::Printf(TEXT("Could not find enum value for '%s'"), *EnumValueName);
-                    return false;
-                }
-            }
-        }
-    }
-    
-    // Generic fallback: use ImportText to parse T3D-format strings.
-    // Covers FStructProperty, FNameProperty, FTextProperty, FDoubleProperty,
-    // FSoftObjectProperty, FObjectProperty, and any other type that supports
-    // text import (which is the format ExportTextItem_Direct produces).
-    if (Value->Type == EJson::String)
-    {
-        FString TextValue = Value->AsString();
-        const TCHAR* Buffer = *TextValue;
-        const TCHAR* Result = Property->ImportText_Direct(Buffer, PropertyAddr, Object, PPF_None);
-        if (Result)
-        {
-            UE_LOG(LogTemp, Display, TEXT("Set property %s via ImportText"), *PropertyName);
-            return true;
-        }
-        else
-        {
-            OutErrorMessage = FString::Printf(TEXT("ImportText failed for property %s (type: %s). Value: %s"),
-                *PropertyName, *Property->GetClass()->GetName(), *TextValue);
-            return false;
         }
     }
 
-    OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"),
-                                    *Property->GetClass()->GetName(), *PropertyName);
-    return false;
-} 
+    if (UClass* OwnerClass = Owner->GetClass())
+    {
+        if (UBlueprint* BP = Cast<UBlueprint>(OwnerClass->ClassGeneratedBy))
+        {
+            if (Owner == OwnerClass->GetDefaultObject(false))
+            {
+                FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+            }
+        }
+    }
+}
