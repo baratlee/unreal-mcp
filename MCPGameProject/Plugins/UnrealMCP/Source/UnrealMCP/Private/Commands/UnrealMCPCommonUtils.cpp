@@ -805,6 +805,50 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             }
         }
 
+        // [LEOCC] FArrayProperty Phase A：把 JSON Array 转 T3D 数组字面量再喂 ImportText_Direct。
+        // 覆盖 TArray<FName/FString/scalar/SoftObject>；元素是 JSON Object 时报错（FStruct 数组留 Phase B）。
+        // 详见 Plugins/UnrealMCP/ChangesDocs/2026-06-09_arrayproperty_import_v1.md
+        if (Property->IsA<FArrayProperty>() && Value->Type == EJson::Array)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = Value->AsArray();
+            FString T3D = TEXT("(");
+            for (int32 i = 0; i < Arr.Num(); ++i)
+            {
+                if (i > 0) T3D += TEXT(",");
+                switch (Arr[i]->Type)
+                {
+                case EJson::String:
+                    // 同时覆盖 FName/FString/FText/FSoftObjectPath/FObjectPath
+                    T3D += FString::Printf(TEXT("\"%s\""), *Arr[i]->AsString().ReplaceCharWithEscapedChar());
+                    break;
+                case EJson::Number:
+                    T3D += FString::SanitizeFloat(Arr[i]->AsNumber());
+                    break;
+                case EJson::Boolean:
+                    T3D += Arr[i]->AsBool() ? TEXT("True") : TEXT("False");
+                    break;
+                default:
+                    OutErrorMessage = FString::Printf(
+                        TEXT("Array element [%d] for property %s: unsupported JSON type (FStruct/nested object arrays not supported in v1, see ChangesDocs)."),
+                        i, *PropertyName);
+                    return false;
+                }
+            }
+            T3D += TEXT(")");
+
+            const TCHAR* Buffer = *T3D;
+            const TCHAR* Result = Property->ImportText_Direct(Buffer, PropertyAddr, Object, PPF_None);
+            if (Result)
+            {
+                UE_LOG(LogTemp, Display, TEXT("Set array property %s, %d elements"), *PropertyName, Arr.Num());
+                bWritten = true; break;
+            }
+            OutErrorMessage = FString::Printf(
+                TEXT("ImportText failed for array property %s. T3D buffer: %s"),
+                *PropertyName, *T3D);
+            return false;
+        }
+
         // Generic fallback: use ImportText to parse T3D-format strings.
         // Covers FStructProperty, FNameProperty, FTextProperty, FDoubleProperty,
         // FSoftObjectProperty, FObjectProperty, and any other type that supports
