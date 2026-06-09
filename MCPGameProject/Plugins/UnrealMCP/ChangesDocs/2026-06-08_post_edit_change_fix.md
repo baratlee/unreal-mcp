@@ -131,6 +131,20 @@ After recompile, repeat the trigger scenario:
 Equivalent checks apply to `set_component_property`, `set_state_tree_node_property`,
 GameplayEffect setters, and Animation setters.
 
+### Validation result (2026-06-09)
+
+The BP_Quad_Enemy scenario above was run end-to-end after recompile:
+
+- Step 1 (post-write): value `AIC_Combat`, reset arrow visible after
+  re-selecting the actor (first-frame Details panel cache may need a
+  manual refresh — not a PEC failure).
+- Step 2 (Ctrl+S): value and arrow preserved.
+- Step 3 (switch level, switch back): **value and arrow preserved**;
+  PIE confirmed the enemy uses Hostile team type and aggroes the player.
+
+The original symptom (reload silently dropping the instance override)
+is fixed.
+
 ## Backwards compatibility
 
 - No tool schemas changed.

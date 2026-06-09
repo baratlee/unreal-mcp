@@ -572,6 +572,48 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
         return false;
     }
 
+    // [LEOCC] 嵌套路径：Head.Tail 形式 → 在 instanced UObject 子对象上递归 set Tail。
+    // 解决 EditInlineNew 子对象的写入（如 AnimNotifyState_MotionWarping.RootMotionModifier.WarpTargetName，
+    // 其中 RootMotionModifier 是 RootMotionModifier_SkewWarp 实例化对象）。
+    // FStructProperty 嵌套（如 BodyInstance.CollisionResponses）地址计算方式不同，暂不支持，留 P2。
+    int32 DotIdx = INDEX_NONE;
+    if (PropertyName.FindChar(TEXT('.'), DotIdx))
+    {
+        const FString HeadName = PropertyName.Left(DotIdx);
+        const FString TailName = PropertyName.Mid(DotIdx + 1);
+
+        FProperty* HeadProperty = Object->GetClass()->FindPropertyByName(*HeadName);
+        if (!HeadProperty)
+        {
+            OutErrorMessage = FString::Printf(TEXT("Nested path head property not found: %s"), *HeadName);
+            return false;
+        }
+
+        if (FObjectProperty* HeadObjProp = CastField<FObjectProperty>(HeadProperty))
+        {
+            void* HeadAddr = HeadObjProp->ContainerPtrToValuePtr<void>(Object);
+            UObject* InnerObject = HeadObjProp->GetObjectPropertyValue(HeadAddr);
+            if (!InnerObject)
+            {
+                OutErrorMessage = FString::Printf(TEXT("Nested subobject is null at: %s"), *HeadName);
+                return false;
+            }
+
+            if (SetObjectProperty(InnerObject, TailName, Value, OutErrorMessage))
+            {
+                // [LEOCC] 子对象写完后通知外层，让 outer 的 PostEditChange 链路触发（package dirty / BP modified）
+                NotifyPropertyChanged(Object, HeadObjProp);
+                return true;
+            }
+            return false;
+        }
+
+        OutErrorMessage = FString::Printf(
+            TEXT("Nested path through non-object property not supported (head: %s, type: %s). FStructProperty (e.g. BodyInstance) is a known gap, see ChangesDocs."),
+            *HeadName, *HeadProperty->GetClass()->GetName());
+        return false;
+    }
+
     FProperty* Property = Object->GetClass()->FindPropertyByName(*PropertyName);
     if (!Property)
     {

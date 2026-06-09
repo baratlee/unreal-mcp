@@ -6366,6 +6366,15 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimationNotifyPro
         return Result;
     }
 
+    // [LEOCC] 嵌套路径（含 '.'）只走 SetObjectProperty，不走 ImportText fallback；
+    // 否则 fallback 的 FindPropertyByName 会用完整 "Head.Tail" 字符串去查（必定 null），
+    // 然后 SetObjectProperty 真正的错误信息会被一句通用 "Property not found on notify object" 吃掉
+    if (PropertyName.Contains(TEXT(".")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Nested path set failed: %s"), *ErrorMessage));
+    }
+
     FProperty* Prop = NotifyObj->GetClass()->FindPropertyByName(*PropertyName);
     if (!Prop)
     {
