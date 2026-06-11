@@ -76,7 +76,8 @@ public class UnrealMCP : ModuleRules
 					"EnhancedInput",       // For UInputAction / UInputMappingContext read-only inspection
 					"PoseSearch",          // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
 					"StateTreeModule",     // For UStateTree / UStateTreeSchema runtime types
-					"StateTreeEditorModule" // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
+					"StateTreeEditorModule", // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
+					"MaterialEditor"       // For UMaterialEditingLibrary write APIs (LT16 2026-06-11)
 				}
 			);
 		}

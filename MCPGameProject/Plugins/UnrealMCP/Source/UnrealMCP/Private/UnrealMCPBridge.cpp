@@ -461,11 +461,20 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             {
                 ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
             }
-            // Material Commands (P0 2026-05-22: read-only inspection; P1 2026-05-22: graph traversal)
+            // Material Commands
+            //   P0 2026-05-22: read-only inspection (info x3)
+            //   P1 2026-05-22: graph traversal (get_material_graph)
+            //   P0a+P0b+P1 2026-06-11: write batch (set_material_expression_property,
+            //     set_material_instance_{scalar,vector,texture}_parameter, set_material_property)
             else if (CommandType == TEXT("get_material_info") ||
                      CommandType == TEXT("get_material_instance_info") ||
                      CommandType == TEXT("get_material_parameter_collection_info") ||
-                     CommandType == TEXT("get_material_graph"))
+                     CommandType == TEXT("get_material_graph") ||
+                     CommandType == TEXT("set_material_expression_property") ||
+                     CommandType == TEXT("set_material_instance_scalar_parameter") ||
+                     CommandType == TEXT("set_material_instance_vector_parameter") ||
+                     CommandType == TEXT("set_material_instance_texture_parameter") ||
+                     CommandType == TEXT("set_material_property"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }

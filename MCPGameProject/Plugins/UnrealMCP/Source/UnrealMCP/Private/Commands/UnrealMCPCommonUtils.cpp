@@ -849,9 +849,75 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             return false;
         }
 
+        // [LEOCC] FObjectProperty (TObjectPtr<UObject>) specific path:
+        // ImportText_Direct under PPF_None does NOT invoke LoadObject for unloaded assets —
+        // it silently writes nullptr and still returns a non-null Result pointer (so the
+        // generic fallback below would falsely report success). Force a StaticLoadObject
+        // so an asset reference from a string path always resolves. Accepts both T3D form
+        // ("Texture2D'/Game/Path.Asset'" or "/Script/Engine.Texture2D'/Game/Path.Asset'")
+        // and plain object path ("/Game/Path.Asset"). 2026-06-11.
+        if (Value->Type == EJson::String)
+        {
+            if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
+            {
+                FString PathStr = Value->AsString();
+                // Strip T3D class prefix if present: keep substring between the first and last single quote
+                int32 FirstQuote = INDEX_NONE;
+                if (PathStr.FindChar(TEXT('\''), FirstQuote))
+                {
+                    int32 LastQuote = INDEX_NONE;
+                    if (PathStr.FindLastChar(TEXT('\''), LastQuote) && LastQuote > FirstQuote)
+                    {
+                        PathStr = PathStr.Mid(FirstQuote + 1, LastQuote - FirstQuote - 1);
+                    }
+                }
+
+                UObject* Asset = nullptr;
+                if (!PathStr.IsEmpty() && !PathStr.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+                {
+                    // Load without strict class cast first (mirror LoadAssetWithFallback pattern in MaterialCommands).
+                    // StaticLoadObject(ExpectedClass, ...) can fail when the path resolves but cast to a narrower
+                    // template class trips on engine internals; LoadObject<UObject> then IsA verify gives clearer
+                    // diagnostics and broader compatibility.
+                    Asset = LoadObject<UObject>(nullptr, *PathStr);
+                    if (!Asset)
+                    {
+                        // Fallback: try appending `.AssetName` if caller passed just the package path
+                        const FString BaseName = FPackageName::ObjectPathToObjectName(PathStr);
+                        if (!BaseName.IsEmpty() && !PathStr.EndsWith(FString(TEXT(".")) + BaseName))
+                        {
+                            const FString FullPath = PathStr + TEXT(".") + BaseName;
+                            Asset = LoadObject<UObject>(nullptr, *FullPath);
+                        }
+                    }
+                    if (!Asset)
+                    {
+                        OutErrorMessage = FString::Printf(
+                            TEXT("FObjectProperty %s: failed to load asset '%s'"),
+                            *PropertyName, *PathStr);
+                        return false;
+                    }
+                    UClass* PropClass = ObjProp->PropertyClass.Get();
+                    if (PropClass && !Asset->IsA(PropClass))
+                    {
+                        OutErrorMessage = FString::Printf(
+                            TEXT("FObjectProperty %s: loaded asset '%s' is of class %s but property expects %s"),
+                            *PropertyName, *Asset->GetPathName(),
+                            *Asset->GetClass()->GetName(), *PropClass->GetName());
+                        return false;
+                    }
+                }
+
+                ObjProp->SetObjectPropertyValue(PropertyAddr, Asset);
+                UE_LOG(LogTemp, Display, TEXT("Set FObjectProperty %s = %s"),
+                    *PropertyName, Asset ? *Asset->GetPathName() : TEXT("None"));
+                bWritten = true; break;
+            }
+        }
+
         // Generic fallback: use ImportText to parse T3D-format strings.
         // Covers FStructProperty, FNameProperty, FTextProperty, FDoubleProperty,
-        // FSoftObjectProperty, FObjectProperty, and any other type that supports
+        // FSoftObjectProperty, and any other type that supports
         // text import (which is the format ExportTextItem_Direct produces).
         if (Value->Type == EJson::String)
         {
