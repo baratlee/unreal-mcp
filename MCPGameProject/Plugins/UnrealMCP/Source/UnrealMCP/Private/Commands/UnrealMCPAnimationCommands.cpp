@@ -6570,6 +6570,17 @@ namespace
             }
             return T;
         }
+        if (ClassName.Equals(TEXT("ChordBlocker"), ESearchCase::IgnoreCase))
+        {
+            auto* T = NewObject<UInputTriggerChordBlocker>(Outer);
+            if (Params->TryGetNumberField(TEXT("actuation_threshold"), Val)) T->ActuationThreshold = Val;
+            FString ChordPath;
+            if (Params->TryGetStringField(TEXT("chord_action_path"), ChordPath))
+            {
+                T->ChordAction = LoadObject<UInputAction>(nullptr, *ChordPath);
+            }
+            return T;
+        }
         return nullptr;
     }
 
@@ -7096,7 +7107,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleAddIMCMappingTrigger(
     if (!NewTrig)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Unknown trigger_class: %s. Supported: Down, Pressed, Released, Hold, HoldAndRelease, Tap, Pulse, ChordAction"), *TriggerClass));
+            FString::Printf(TEXT("Unknown trigger_class: %s. Supported: Down, Pressed, Released, Hold, HoldAndRelease, Tap, Pulse, ChordAction, ChordBlocker"), *TriggerClass));
     }
 
     TArray<FEnhancedActionKeyMapping>& MutableMappings = const_cast<TArray<FEnhancedActionKeyMapping>&>(Mappings);

@@ -477,7 +477,7 @@ def register_input_tools(mcp: FastMCP):
             asset_path: IMC asset path
             mapping_index: Index of the mapping
             trigger_class: One of: "Down", "Pressed", "Released", "Hold",
-                "HoldAndRelease", "Tap", "Pulse", "ChordAction"
+                "HoldAndRelease", "Tap", "Pulse", "ChordAction", "ChordBlocker"
 
             Common params:
                 actuation_threshold: float (default ~0.5)
@@ -499,6 +499,11 @@ def register_input_tools(mcp: FastMCP):
 
             ChordAction params:
                 chord_action_path: asset path of the chord InputAction
+
+            ChordBlocker params:
+                chord_action_path: asset path of the chord InputAction
+                (blocks the mapping while the chord IA is actuated; same
+                fields as ChordAction)
 
         Returns:
             Dict with success, asset_path, mapping_index, trigger_class,
@@ -597,7 +602,7 @@ def register_input_tools(mcp: FastMCP):
                 interval: float (seconds)
                 trigger_limit: int (0 = unlimited)
 
-            ChordAction params:
+            ChordAction / ChordBlocker params:
                 chord_action_path: asset path of the chord InputAction
 
         Returns:
