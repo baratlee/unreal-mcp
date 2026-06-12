@@ -32,6 +32,9 @@
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
+// LT16 2026-06-12 — spawn_blueprint_actor 任意路径支持：AssetRegistry 短名查找
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -366,6 +369,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.Name = *ActorName;
+    // [LEOCC · LT16 2026-06-12] 名字冲突时不要 fatal —— 返回 nullptr 让上层报错
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
 
     if (ActorType == TEXT("StaticMeshActor"))
     {
@@ -412,11 +417,16 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
         Transform.SetScale3D(Scale);
         NewActor->SetActorTransform(Transform);
 
+#if WITH_EDITOR
+        // [LEOCC · LT16 2026-06-12] 同步 outliner 显示名（必须显式 SetActorLabel）
+        NewActor->SetActorLabel(ActorName);
+#endif
         // Return the created actor's details
         return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
     }
 
-    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create actor"));
+    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+        TEXT("Failed to spawn actor '%s' — likely name conflict with an existing actor in this world"), *ActorName));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TSharedPtr<FJsonObject>& Params)
@@ -616,18 +626,66 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint name is empty"));
     }
 
-    FString Root      = TEXT("/Game/Blueprints/");
-    FString AssetPath = Root + BlueprintName;
-
-    if (!FPackageName::DoesPackageExist(AssetPath))
+    // [LEOCC · LT16 2026-06-12] 三段式 BP 路径解析：
+    //   1) Object path with class suffix —— "/Game/Foo/BP_X.BP_X"     → 去后缀拿 package path
+    //   2) Bare package path             —— "/Game/Foo/BP_X"          → 直接 DoesPackageExist
+    //   3) Short name (legacy)           —— "BP_X"                    → AssetRegistry 全 /Game 扫
+    // 三种形式都失败才报错；优先级 1>2>3，命中即用。
+    FString AssetPath;
+    if (BlueprintName.StartsWith(TEXT("/")))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found – it must reside under /Game/Blueprints"), *BlueprintName));
+        FString PackagePath = BlueprintName;
+        int32 DotIdx = INDEX_NONE;
+        if (PackagePath.FindChar(TEXT('.'), DotIdx))
+        {
+            PackagePath = PackagePath.Left(DotIdx);
+        }
+        if (FPackageName::DoesPackageExist(PackagePath))
+        {
+            AssetPath = PackagePath;
+        }
+        else
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                TEXT("Blueprint package '%s' does not exist"), *PackagePath));
+        }
+    }
+    else
+    {
+        // 短名兼容：先试老路径 /Game/Blueprints/<Name>，再走 AssetRegistry 全工程查
+        const FString LegacyPath = FString::Printf(TEXT("/Game/Blueprints/%s"), *BlueprintName);
+        if (FPackageName::DoesPackageExist(LegacyPath))
+        {
+            AssetPath = LegacyPath;
+        }
+        else
+        {
+            IAssetRegistry& AssetRegistry = FAssetRegistryModule::GetRegistry();
+            TArray<FAssetData> Found;
+            AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), Found, /*bSearchSubClasses*/ true);
+            FAssetData Match;
+            for (const FAssetData& A : Found)
+            {
+                if (A.AssetName == FName(*BlueprintName))
+                {
+                    Match = A;
+                    break;
+                }
+            }
+            if (!Match.IsValid())
+            {
+                return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                    TEXT("Blueprint '%s' not found in /Game/Blueprints/ or anywhere else under /Game; pass a full path like /Game/Foo/BP_X"),
+                    *BlueprintName));
+            }
+            AssetPath = Match.PackageName.ToString();
+        }
     }
 
     UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint asset failed to load: %s"), *AssetPath));
     }
 
     // Get transform parameters
@@ -662,14 +720,21 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.Name = *ActorName;
+    // [LEOCC · LT16 2026-06-12] 名字冲突时不要 fatal —— 返回 nullptr 让上层报错
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
 
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
+#if WITH_EDITOR
+        // [LEOCC · LT16 2026-06-12] 同步 outliner 显示名（默认只设 FName，Outliner 显示的是 ActorLabel —— 必须显式同步）
+        NewActor->SetActorLabel(ActorName);
+#endif
         return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
     }
 
-    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn blueprint actor"));
+    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+        TEXT("Failed to spawn blueprint actor '%s' — likely name conflict with an existing actor in this world"), *ActorName));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSharedPtr<FJsonObject>& Params)

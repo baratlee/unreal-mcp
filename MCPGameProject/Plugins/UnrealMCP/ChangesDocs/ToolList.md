@@ -15,7 +15,7 @@
 | `set_actor_transform` | 设置 Actor 的 Transform（位置/旋转/缩放） |
 | `get_actor_properties` | 获取 Actor 的所有属性 |
 | `set_actor_property` | 设置 Actor 上的指定属性 |
-| `spawn_blueprint_actor` | 从 Blueprint 资产生成 Actor 实例 |
+| `spawn_blueprint_actor` | 从 Blueprint 资产生成 Actor 实例（blueprint_name 支持完整 object path `/Game/Foo/BP_X.BP_X`、纯 package path `/Game/Foo/BP_X` 或短名 `BP_X`；短名先查 /Game/Blueprints/ 再 AssetRegistry 全工程 fallback） |
 | `save_dirty_assets` | 把内存中 dirty 的非 Map 包写回磁盘（可选 asset_paths 精确指定，否则全量扫） |
 | `delete_asset` | 从 Content Browser 删除资产（默认拒绝有引用的；force=true 走 DeleteLoadedAsset） |
 
