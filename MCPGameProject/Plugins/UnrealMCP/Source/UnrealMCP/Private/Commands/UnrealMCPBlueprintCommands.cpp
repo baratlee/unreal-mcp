@@ -939,7 +939,25 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
     if (Params->HasField(TEXT("property_value")))
     {
         TSharedPtr<FJsonValue> JsonValue = Params->Values.FindRef(TEXT("property_value"));
-        
+
+        // [LEOCC] 点分嵌套路径（如 BodyInstance.CollisionProfileName）直接走 SetObjectProperty，
+        // FindFProperty 只做精确名匹配，无法处理点分路径。
+        if (PropertyName.Contains(TEXT(".")))
+        {
+            ComponentTemplate->Modify();
+            FString NestedError;
+            if (FUnrealMCPCommonUtils::SetObjectProperty(ComponentTemplate, PropertyName, JsonValue, NestedError))
+            {
+                FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+                TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+                ResultObj->SetStringField(TEXT("component"), ComponentName);
+                ResultObj->SetStringField(TEXT("property"), PropertyName);
+                ResultObj->SetBoolField(TEXT("success"), true);
+                return ResultObj;
+            }
+            return FUnrealMCPCommonUtils::CreateErrorResponse(NestedError);
+        }
+
         // Get the property
         FProperty* Property = FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyName);
         if (!Property)
@@ -1366,16 +1384,46 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
     if (Params->HasField(TEXT("property_value")))
     {
         TSharedPtr<FJsonValue> JsonValue = Params->Values.FindRef(TEXT("property_value"));
-        
+
+        // [LEOCC] 子蓝图落盘修复：写 CDO 前先让 Blueprint 对象和 CDO 一起进入 UE 事务系统，
+        // 避免编译时 CDO 重建覆盖掉只写到 in-memory CDO 而未登记 override 的改动。
+        Blueprint->Modify();
+        DefaultObject->Modify();
+
         FString ErrorMessage;
         if (FUnrealMCPCommonUtils::SetObjectProperty(DefaultObject, PropertyName, JsonValue, ErrorMessage))
         {
-            // Mark the blueprint as modified
             FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+            // [LEOCC] 子蓝图落盘修复 Part 2：若属性在本 BP 的 NewVariables 中声明，
+            // 把导出值同步写回 FBPVariableDescription::DefaultValue，确保编译期 CDO 重建使用正确值。
+            // 继承自父 BP（非 C++ 基类）的属性不在 NewVariables 里，此路径无法覆盖，会输出 warning。
+            const FName PropFName(*PropertyName);
+            bool bFoundInNewVars = false;
+            if (FProperty* Prop = DefaultObject->GetClass()->FindPropertyByName(PropFName))
+            {
+                for (FBPVariableDescription& VarDesc : Blueprint->NewVariables)
+                {
+                    if (VarDesc.VarName == PropFName)
+                    {
+                        FString ExportedValue;
+                        void* PropAddr = Prop->ContainerPtrToValuePtr<void>(DefaultObject);
+                        Prop->ExportTextItem_Direct(ExportedValue, PropAddr, nullptr, DefaultObject, PPF_None);
+                        VarDesc.DefaultValue = ExportedValue;
+                        bFoundInNewVars = true;
+                        break;
+                    }
+                }
+            }
 
             TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
             ResultObj->SetStringField(TEXT("property"), PropertyName);
             ResultObj->SetBoolField(TEXT("success"), true);
+            if (!bFoundInNewVars)
+            {
+                ResultObj->SetStringField(TEXT("warning"),
+                    TEXT("Property not found in this blueprint's NewVariables — if inherited from a parent blueprint, compile may reset this value. Verify with get_blueprint_cdo_properties after compile+save."));
+            }
             return ResultObj;
         }
         else

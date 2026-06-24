@@ -494,14 +494,16 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationNotifies(
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Animation asset not found: %s"), *AssetPath));
     }
 
-    TArray<FAnimNotifyEvent> Notifies;
-    UAnimationBlueprintLibrary::GetAnimationNotifyEvents(AnimBase, Notifies);
-
+    // [LEOCC] 直接遍历 AnimBase->Notifies 原始数组而不用 GetAnimationNotifyEvents 排序副本，
+    // 确保输出的 raw_index 与 set_animation_notify / remove_animation_notify / get_animation_notify_details
+    // 所使用的 notify_index 一一对应，消除旧方案中 sorted-view 下标 ≠ raw 下标的歧义。
     TArray<TSharedPtr<FJsonValue>> NotifiesJson;
-    NotifiesJson.Reserve(Notifies.Num());
-    for (const FAnimNotifyEvent& Notify : Notifies)
+    NotifiesJson.Reserve(AnimBase->Notifies.Num());
+    for (int32 i = 0; i < AnimBase->Notifies.Num(); ++i)
     {
+        const FAnimNotifyEvent& Notify = AnimBase->Notifies[i];
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetNumberField(TEXT("raw_index"), i);
         Entry->SetStringField(TEXT("notify_name"), Notify.NotifyName.ToString());
         Entry->SetNumberField(TEXT("trigger_time"), Notify.GetTriggerTime());
         Entry->SetNumberField(TEXT("duration"), Notify.GetDuration());
@@ -526,7 +528,7 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationNotifies(
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("asset_path"), AssetPath);
     Result->SetStringField(TEXT("asset_class"), AnimBase->GetClass()->GetName());
-    Result->SetNumberField(TEXT("notify_count"), Notifies.Num());
+    Result->SetNumberField(TEXT("notify_count"), AnimBase->Notifies.Num());
     Result->SetArrayField(TEXT("notifies"), NotifiesJson);
     return Result;
 }

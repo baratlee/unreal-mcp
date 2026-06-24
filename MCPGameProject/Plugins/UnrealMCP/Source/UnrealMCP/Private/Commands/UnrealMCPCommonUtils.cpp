@@ -1,4 +1,5 @@
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "JsonObjectConverter.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -608,8 +609,81 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             return false;
         }
 
+        // [LEOCC] FStructProperty 嵌套路径（如 BodyInstance.CollisionProfile 或 A.B.C）：
+        // 沿路径段逐层定位，最终对叶子字段调 ImportText_Direct 写入。
+        // 支持任意深度；中间段必须全为 FStructProperty；叶子接受 string / number / bool。
+        if (FStructProperty* HeadStructProp = CastField<FStructProperty>(HeadProperty))
+        {
+            TArray<FString> Segments;
+            TailName.ParseIntoArray(Segments, TEXT("."), true);
+            if (Segments.IsEmpty())
+            {
+                OutErrorMessage = FString::Printf(TEXT("Empty tail path after head struct '%s'"), *HeadName);
+                return false;
+            }
+
+            UStruct*   CurrentStruct = HeadStructProp->Struct;
+            void*      CurrentData   = HeadStructProp->ContainerPtrToValuePtr<void>(Object);
+            FProperty* LeafProp      = nullptr;
+            void*      LeafData      = nullptr;
+
+            for (int32 si = 0; si < Segments.Num(); ++si)
+            {
+                FProperty* Seg = CurrentStruct->FindPropertyByName(*Segments[si]);
+                if (!Seg)
+                {
+                    OutErrorMessage = FString::Printf(TEXT("Struct path segment '%s' not found in '%s'"),
+                        *Segments[si], *CurrentStruct->GetName());
+                    return false;
+                }
+
+                if (si == Segments.Num() - 1)
+                {
+                    LeafProp = Seg;
+                    LeafData = Seg->ContainerPtrToValuePtr<void>(CurrentData);
+                }
+                else
+                {
+                    FStructProperty* NextStruct = CastField<FStructProperty>(Seg);
+                    if (!NextStruct)
+                    {
+                        OutErrorMessage = FString::Printf(
+                            TEXT("Intermediate struct path segment '%s' is not FStructProperty (type: %s)"),
+                            *Segments[si], *Seg->GetClass()->GetName());
+                        return false;
+                    }
+                    CurrentStruct = NextStruct->Struct;
+                    CurrentData   = Seg->ContainerPtrToValuePtr<void>(CurrentData);
+                }
+            }
+
+            FString TextValue;
+            switch (Value->Type)
+            {
+            case EJson::String:  TextValue = Value->AsString(); break;
+            case EJson::Number:  TextValue = FString::SanitizeFloat(Value->AsNumber()); break;
+            case EJson::Boolean: TextValue = Value->AsBool() ? TEXT("True") : TEXT("False"); break;
+            default:
+                OutErrorMessage = FString::Printf(
+                    TEXT("Struct field '%s.%s': unsupported JSON value type (expected string/number/bool)"),
+                    *HeadName, *TailName);
+                return false;
+            }
+
+            if (!LeafProp->ImportText_Direct(*TextValue, LeafData, Object, PPF_None))
+            {
+                OutErrorMessage = FString::Printf(
+                    TEXT("ImportText failed for struct field '%s.%s' (leaf type: %s, value: '%s')"),
+                    *HeadName, *TailName, *LeafProp->GetClass()->GetName(), *TextValue);
+                return false;
+            }
+
+            NotifyPropertyChanged(Object, HeadStructProp);
+            return true;
+        }
+
         OutErrorMessage = FString::Printf(
-            TEXT("Nested path through non-object property not supported (head: %s, type: %s). FStructProperty (e.g. BodyInstance) is a known gap, see ChangesDocs."),
+            TEXT("Nested path through non-object/non-struct property not supported (head: %s, type: %s)."),
             *HeadName, *HeadProperty->GetClass()->GetName());
         return false;
     }
@@ -805,12 +879,53 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             }
         }
 
-        // [LEOCC] FArrayProperty Phase A：把 JSON Array 转 T3D 数组字面量再喂 ImportText_Direct。
-        // 覆盖 TArray<FName/FString/scalar/SoftObject>；元素是 JSON Object 时报错（FStruct 数组留 Phase B）。
-        // 详见 Plugins/UnrealMCP/ChangesDocs/2026-06-09_arrayproperty_import_v1.md
+        // [LEOCC] FArrayProperty Phase A/B dispatch —
+        // Phase B: TArray<FStruct>（Inner 是 FStructProperty）→ FScriptArrayHelper + FJsonObjectConverter
+        // Phase A: TArray<scalar/FName/FString/SoftObject>    → T3D ImportText（原逻辑保持不变）
+        // 详见 ChangesDocs/2026-06-09_arrayproperty_import_v1.md (Phase A)
+        //        ChangesDocs/2026-06-24_lt16_phase_c.md       (Phase B)
         if (Property->IsA<FArrayProperty>() && Value->Type == EJson::Array)
         {
+            FArrayProperty* ArrProp = CastField<FArrayProperty>(Property);
             const TArray<TSharedPtr<FJsonValue>>& Arr = Value->AsArray();
+
+            // Phase B: TArray<FStruct>
+            if (FStructProperty* InnerStructProp = CastField<FStructProperty>(ArrProp->Inner))
+            {
+                FScriptArrayHelper ArrayHelper(ArrProp, PropertyAddr);
+                ArrayHelper.Resize(Arr.Num());
+
+                for (int32 i = 0; i < Arr.Num(); ++i)
+                {
+                    TSharedPtr<FJsonObject> ElemObj = Arr[i]->AsObject();
+                    if (!ElemObj)
+                    {
+                        OutErrorMessage = FString::Printf(
+                            TEXT("TArray<FStruct>[%d] for property '%s': expected JSON Object, got type %d"),
+                            i, *PropertyName, (int32)Arr[i]->Type);
+                        return false;
+                    }
+
+                    void* ElemPtr = ArrayHelper.GetRawPtr(i);
+                    // 零初始化元素（Resize 只分配内存，不调构造函数）
+                    InnerStructProp->Struct->InitializeStruct(ElemPtr);
+
+                    if (!FJsonObjectConverter::JsonObjectToUStruct(
+                        ElemObj.ToSharedRef(), InnerStructProp->Struct, ElemPtr, 0, 0))
+                    {
+                        OutErrorMessage = FString::Printf(
+                            TEXT("TArray<FStruct>[%d] for property '%s': FJsonObjectConverter failed (struct: %s)"),
+                            i, *PropertyName, *InnerStructProp->Struct->GetName());
+                        return false;
+                    }
+                }
+
+                UE_LOG(LogTemp, Display, TEXT("Set TArray<FStruct> property '%s' (%s), %d elements"),
+                    *PropertyName, *InnerStructProp->Struct->GetName(), Arr.Num());
+                bWritten = true; break;
+            }
+
+            // Phase A: T3D import for scalar/FName/FString/SoftObject arrays
             FString T3D = TEXT("(");
             for (int32 i = 0; i < Arr.Num(); ++i)
             {
@@ -829,8 +944,8 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
                     break;
                 default:
                     OutErrorMessage = FString::Printf(
-                        TEXT("Array element [%d] for property %s: unsupported JSON type (FStruct/nested object arrays not supported in v1, see ChangesDocs)."),
-                        i, *PropertyName);
+                        TEXT("Array element [%d] for property '%s': unsupported JSON type %d."),
+                        i, *PropertyName, (int32)Arr[i]->Type);
                     return false;
                 }
             }
@@ -840,11 +955,11 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             const TCHAR* Result = Property->ImportText_Direct(Buffer, PropertyAddr, Object, PPF_None);
             if (Result)
             {
-                UE_LOG(LogTemp, Display, TEXT("Set array property %s, %d elements"), *PropertyName, Arr.Num());
+                UE_LOG(LogTemp, Display, TEXT("Set array property '%s', %d elements"), *PropertyName, Arr.Num());
                 bWritten = true; break;
             }
             OutErrorMessage = FString::Printf(
-                TEXT("ImportText failed for array property %s. T3D buffer: %s"),
+                TEXT("ImportText failed for array property '%s'. T3D buffer: %s"),
                 *PropertyName, *T3D);
             return false;
         }
