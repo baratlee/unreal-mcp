@@ -13,6 +13,7 @@
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimInstance.h"
 #include "Factories/AnimBlueprintFactory.h" // Batch E: create_anim_blueprint
+#include "Factories/AnimMontageFactory.h"   // create_anim_montage
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "AnimationBlueprintLibrary.h"
@@ -402,6 +403,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("create_anim_blueprint"))
     {
         return HandleCreateAnimBlueprint(Params);
+    }
+    if (CommandType == TEXT("create_anim_montage"))
+    {
+        return HandleCreateAnimMontage(Params);
     }
     if (CommandType == TEXT("connect_ik_rig_goal_to_solver"))
     {
@@ -7493,6 +7498,100 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateAnimBlueprint(c
     Result->SetStringField(TEXT("parent_class"), ParentClass->GetPathName());
     Result->SetStringField(TEXT("target_skeleton"), TargetSkeleton ? TargetSkeleton->GetPathName() : FString());
     Result->SetBoolField(TEXT("is_template"), bTemplate);
+    Result->SetBoolField(TEXT("saved"), false); // caller must call save_dirty_assets to persist
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCreateAnimMontage(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    FString SourceAnimPath;
+    if (!Params->TryGetStringField(TEXT("source_animation"), SourceAnimPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_animation' parameter"));
+    }
+
+    // Optional knobs. slot_name defaults to the montage ctor's "DefaultSlot"; blend 默认 0.25 对齐项目现状。
+    FString SlotName;
+    Params->TryGetStringField(TEXT("slot_name"), SlotName);
+
+    double BlendIn = 0.25, BlendOut = 0.25;
+    Params->TryGetNumberField(TEXT("blend_in"), BlendIn);
+    Params->TryGetNumberField(TEXT("blend_out"), BlendOut);
+
+    // Split asset path into (package_name, asset_name).
+    FString PackageName = AssetPath;
+    int32 DotIdx = INDEX_NONE;
+    if (PackageName.FindChar('.', DotIdx)) PackageName = PackageName.Left(DotIdx);
+    int32 SlashIdx = INDEX_NONE;
+    if (!PackageName.FindLastChar('/', SlashIdx) || SlashIdx + 1 >= PackageName.Len())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid asset_path: %s"), *AssetPath));
+    }
+    const FString AssetName = PackageName.Mid(SlashIdx + 1);
+
+    if (UPackage* Existing = FindPackage(nullptr, *PackageName))
+    {
+        if (FindObject<UAnimMontage>(Existing, *AssetName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("AnimMontage already exists: %s"), *AssetPath));
+        }
+    }
+
+    UAnimSequence* SourceAnim = LoadObject<UAnimSequence>(nullptr, *SourceAnimPath);
+    if (!SourceAnim)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("source_animation not found (must be a UAnimSequence): %s"), *SourceAnimPath));
+    }
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+    }
+    Package->FullyLoad();
+
+    // 复刻编辑器右键 Create AnimMontage：设 SourceAnimation 后 FactoryCreateNew 自动派生
+    // TargetSkeleton、建 DefaultSlot 单段、SetCompositeLength、补 "Default" section（见引擎 AnimMontageFactory.cpp）。
+    UAnimMontageFactory* Factory = NewObject<UAnimMontageFactory>();
+    Factory->SourceAnimation = SourceAnim;
+
+    UAnimMontage* NewMontage = Cast<UAnimMontage>(
+        Factory->FactoryCreateNew(UAnimMontage::StaticClass(), Package, *AssetName, RF_Public | RF_Standalone, nullptr, GWarn));
+    if (!NewMontage)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("UAnimMontageFactory::FactoryCreateNew returned null"));
+    }
+
+    // 暴露的旋钮后处理：blend 时间 + 自定义 slot 名。
+    NewMontage->BlendIn.SetBlendTime(static_cast<float>(BlendIn));
+    NewMontage->BlendOut.SetBlendTime(static_cast<float>(BlendOut));
+    if (!SlotName.IsEmpty() && NewMontage->SlotAnimTracks.Num() > 0)
+    {
+        NewMontage->SlotAnimTracks[0].SlotName = FName(*SlotName);
+    }
+
+    FAssetRegistryModule::AssetCreated(NewMontage);
+    Package->MarkPackageDirty();
+
+    const FName FinalSlot = (NewMontage->SlotAnimTracks.Num() > 0) ? NewMontage->SlotAnimTracks[0].SlotName : NAME_None;
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), NewMontage->GetPathName());
+    Result->SetStringField(TEXT("source_animation"), SourceAnim->GetPathName());
+    Result->SetStringField(TEXT("skeleton"), NewMontage->GetSkeleton() ? NewMontage->GetSkeleton()->GetPathName() : FString());
+    Result->SetStringField(TEXT("slot_name"), FinalSlot.ToString());
+    Result->SetNumberField(TEXT("play_length"), NewMontage->GetPlayLength());
+    Result->SetNumberField(TEXT("blend_in_time"), NewMontage->BlendIn.GetBlendTime());
+    Result->SetNumberField(TEXT("blend_out_time"), NewMontage->BlendOut.GetBlendTime());
     Result->SetBoolField(TEXT("saved"), false); // caller must call save_dirty_assets to persist
     return Result;
 }

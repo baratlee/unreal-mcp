@@ -96,15 +96,15 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": widget_name,
                 "text_block_name": text_block_name,
                 "text": text,
-                "position": position,
-                "size": size,
+                "position": list(position),
+                "size": list(size),
                 "font_size": font_size,
-                "color": color
+                "color": list(color)
             }
-            
+
             logger.info(f"Adding Text Block to widget with params: {params}")
             response = unreal.send_command("add_text_block_to_widget", params)
             

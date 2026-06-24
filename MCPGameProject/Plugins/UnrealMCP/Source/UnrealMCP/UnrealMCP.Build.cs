@@ -77,7 +77,8 @@ public class UnrealMCP : ModuleRules
 					"PoseSearch",          // For UPoseSearchDatabase / UPoseSearchSchema read-only inspection
 					"StateTreeModule",     // For UStateTree / UStateTreeSchema runtime types
 					"StateTreeEditorModule", // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
-					"MaterialEditor"       // For UMaterialEditingLibrary write APIs (LT16 2026-06-11)
+					"MaterialEditor",      // For UMaterialEditingLibrary write APIs (LT16 2026-06-11)
+					"PythonScriptPlugin"   // For IPythonScriptPlugin::ExecPythonCommandEx (LT16 2026-06-24)
 				}
 			);
 		}

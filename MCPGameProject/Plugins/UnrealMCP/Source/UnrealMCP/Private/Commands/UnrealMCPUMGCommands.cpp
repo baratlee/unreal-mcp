@@ -15,6 +15,8 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "JsonObjectConverter.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Components/Button.h"
@@ -135,14 +137,18 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
 	}
 
+	// Accept both "text_block_name" (preferred) and legacy "widget_name"
 	FString WidgetName;
-	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
+	if (!Params->TryGetStringField(TEXT("text_block_name"), WidgetName))
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
+		if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'text_block_name' parameter"));
+		}
 	}
 
-	// Find the Widget Blueprint
-	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
+	// Support full asset path (e.g. "/Game/Examples/Leo/WBP_HUDLayout") or bare name (falls back to /Game/Widgets/)
+	FString FullPath = BlueprintName.StartsWith(TEXT("/Game/")) ? BlueprintName : (TEXT("/Game/Widgets/") + BlueprintName);
 	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
 	if (!WidgetBlueprint)
 	{
@@ -174,15 +180,27 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 	// Set initial text
 	TextBlock->SetText(FText::FromString(InitialText));
 
-	// Add to canvas panel
-	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
-	if (!RootCanvas)
+	// Add to root panel — supports both CanvasPanel and Overlay roots
+	UWidget* RootWidget = WidgetBlueprint->WidgetTree->RootWidget;
+	if (UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(RootWidget))
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
+		UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(TextBlock);
+		PanelSlot->SetPosition(Position);
 	}
-
-	UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(TextBlock);
-	PanelSlot->SetPosition(Position);
+	else if (UOverlay* RootOverlay = Cast<UOverlay>(RootWidget))
+	{
+		if (UOverlaySlot* OSlot = RootOverlay->AddChildToOverlay(TextBlock))
+		{
+			OSlot->SetHorizontalAlignment(HAlign_Center);
+			OSlot->SetVerticalAlignment(VAlign_Bottom);
+			// Position.Y = bottom padding (distance from screen bottom); X ignored for centered layout
+			OSlot->SetPadding(FMargin(0.f, 0.f, 0.f, Position.Y));
+		}
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root widget is not a Canvas Panel or Overlay"));
+	}
 
 	// Mark the package dirty and compile
 	WidgetBlueprint->MarkPackageDirty();

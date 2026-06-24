@@ -23,6 +23,10 @@ TSharedPtr<FJsonObject> FUnrealMCPDataAssetCommands::HandleCommand(
 	{
 		return HandleListDataAssets(Params);
 	}
+	else if (CommandType == TEXT("create_data_asset"))
+	{
+		return HandleCreateDataAsset(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown DataAsset command: %s"), *CommandType));
@@ -422,4 +426,111 @@ void FUnrealMCPDataAssetCommands::SerializePropertiesToJson(
 
 		OutArray.Add(MakeShared<FJsonValueObject>(PropObj));
 	}
+}
+
+// ---------------------------------------------------------------------------
+// HandleCreateDataAsset
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FUnrealMCPDataAssetCommands::HandleCreateDataAsset(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString PackagePath, AssetName;
+	if (!Params->TryGetStringField(TEXT("asset_path"), PackagePath) ||
+		!Params->TryGetStringField(TEXT("asset_name"), AssetName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Missing required parameters: 'asset_path' (folder) and 'asset_name'"));
+	}
+
+	if (PackagePath.EndsWith(TEXT("/")))
+		PackagePath = PackagePath.LeftChop(1);
+
+	const FString FullPackageName = PackagePath + TEXT("/") + AssetName;
+	const FString FullObjectPath  = FullPackageName + TEXT(".") + AssetName;
+
+	if (LoadObject<UObject>(nullptr, *FullObjectPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset already exists: %s"), *FullObjectPath));
+	}
+
+	// --- Resolve class and optional copy source ---
+	UClass*  AssetClass          = nullptr;
+	UObject* SourceForDuplicate  = nullptr;
+
+	FString CopyFromPath;
+	if (Params->TryGetStringField(TEXT("copy_from"), CopyFromPath) && !CopyFromPath.IsEmpty())
+	{
+		SourceForDuplicate = LoadObject<UObject>(nullptr, *CopyFromPath);
+		if (!SourceForDuplicate)
+		{
+			const FString BaseName = FPackageName::ObjectPathToObjectName(CopyFromPath);
+			if (!CopyFromPath.EndsWith(TEXT(".") + BaseName))
+				SourceForDuplicate = LoadObject<UObject>(nullptr, *(CopyFromPath + TEXT(".") + BaseName));
+		}
+		if (!SourceForDuplicate)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("copy_from asset not found: %s"), *CopyFromPath));
+		}
+		AssetClass = SourceForDuplicate->GetClass();
+	}
+	else
+	{
+		FString ClassName;
+		if (!Params->TryGetStringField(TEXT("class_name"), ClassName))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Missing 'class_name' (required when 'copy_from' is not specified)"));
+		}
+		AssetClass = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+		if (!AssetClass)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Class not found: '%s' — check spelling and ensure the module is loaded"), *ClassName));
+		}
+	}
+
+	if (!AssetClass->IsChildOf(UDataAsset::StaticClass()))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("'%s' is not a UDataAsset subclass"), *AssetClass->GetName()));
+	}
+
+	// --- Create package ---
+	UPackage* Package = CreatePackage(*FullPackageName);
+	if (!Package)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("CreatePackage failed: %s"), *FullPackageName));
+	}
+	Package->FullyLoad();
+
+	// --- Create or duplicate ---
+	UObject* NewAsset = nullptr;
+	if (SourceForDuplicate)
+	{
+		NewAsset = StaticDuplicateObject(SourceForDuplicate, Package, FName(*AssetName));
+	}
+	else
+	{
+		NewAsset = NewObject<UDataAsset>(
+			Package, AssetClass, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!NewAsset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create DataAsset object"));
+	}
+
+	NewAsset->SetFlags(RF_Public | RF_Standalone);
+	FAssetRegistryModule::AssetCreated(NewAsset);
+	Package->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), NewAsset->GetPathName());
+	Result->SetStringField(TEXT("class_name"),  AssetClass->GetName());
+	Result->SetBoolField(TEXT("copied"),  SourceForDuplicate != nullptr);
+	Result->SetBoolField(TEXT("saved"),   false);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
 }

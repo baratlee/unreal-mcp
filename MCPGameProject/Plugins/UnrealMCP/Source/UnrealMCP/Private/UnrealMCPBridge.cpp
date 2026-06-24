@@ -64,6 +64,7 @@
 #include "Commands/UnrealMCPSplineCommands.h"
 #include "Commands/UnrealMCPNiagaraCommands.h"
 #include "Commands/UnrealMCPGameplayEffectCommands.h"
+#include "Commands/UnrealMCPPythonCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -116,6 +117,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     SplineCommands = MakeShared<FUnrealMCPSplineCommands>();
     NiagaraCommands = MakeShared<FUnrealMCPNiagaraCommands>();
     GameplayEffectCommands = MakeShared<FUnrealMCPGameplayEffectCommands>();
+    PythonCommands = MakeShared<FUnrealMCPPythonCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -132,6 +134,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     SplineCommands.Reset();
     NiagaraCommands.Reset();
     GameplayEffectCommands.Reset();
+    PythonCommands.Reset();
 }
 
 // Initialize subsystem
@@ -431,6 +434,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_animation_notify_property") ||
                      // Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md
                      CommandType == TEXT("create_anim_blueprint") ||
+                     CommandType == TEXT("create_anim_montage") ||
                      CommandType == TEXT("connect_ik_rig_goal_to_solver") ||
                      CommandType == TEXT("set_ik_rig_solver_field") ||
                      CommandType == TEXT("delete_ik_rig_chain") ||
@@ -457,7 +461,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             // DataAsset Commands
             else if (CommandType == TEXT("get_data_asset_info") ||
                      CommandType == TEXT("set_data_asset_property") ||
-                     CommandType == TEXT("list_data_assets"))
+                     CommandType == TEXT("list_data_assets") ||
+                     CommandType == TEXT("create_data_asset"))
             {
                 ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
             }
@@ -519,6 +524,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_gameplay_effect_granted_ability"))
             {
                 ResultJson = GameplayEffectCommands->HandleCommand(CommandType, Params);
+            }
+            else if (CommandType == TEXT("execute_python_script") ||
+                     CommandType == TEXT("execute_python_file"))
+            {
+                ResultJson = PythonCommands->HandleCommand(CommandType, Params);
             }
             else
             {

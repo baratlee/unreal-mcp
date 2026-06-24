@@ -107,6 +107,66 @@ def register_data_asset_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def create_data_asset(
+        ctx: Context,
+        asset_path: str,
+        asset_name: str,
+        class_name: str = "",
+        copy_from: str = ""
+    ) -> Dict[str, Any]:
+        """Create a new DataAsset (UDataAsset subclass) in the Content Browser.
+
+        Two modes:
+        1. Fresh creation — provide class_name (e.g. "DA_KLPawnData").
+           Creates a blank instance of that class with all defaults.
+        2. Duplicate — provide copy_from (e.g. "/Game/Data/DA_Source").
+           Deep-copies the source asset; class_name is inferred from the source.
+
+        The asset is marked dirty after creation — save it from the editor or
+        call save_dirty_assets to persist.
+
+        Args:
+            asset_path: Destination folder, e.g. "/Game/Kunlun/DataAsset/Character"
+            asset_name: Name of the new asset, e.g. "DA_Pawn_TestDummy"
+            class_name: Short UClass name (required when copy_from is empty),
+                        e.g. "DA_KLPawnData"
+            copy_from:  Full asset path of an existing DataAsset to duplicate,
+                        e.g. "/Game/Examples/Demo/DataAsset/Characters/DA_Pawn_Enemy"
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params: Dict[str, Any] = {
+                "asset_path": asset_path,
+                "asset_name": asset_name,
+            }
+            if class_name:
+                params["class_name"] = class_name
+            if copy_from:
+                params["copy_from"] = copy_from
+
+            logger.info(f"create_data_asset: {asset_path}/{asset_name} "
+                        f"class={class_name or '(from copy)'} copy_from={copy_from or '(none)'}")
+            response = unreal.send_command("create_data_asset", params)
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"create_data_asset response: {response}")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error creating data asset: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def list_data_assets(
         ctx: Context,
         class_name: str = "",

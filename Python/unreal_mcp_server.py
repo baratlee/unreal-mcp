@@ -281,6 +281,7 @@ from tools.material_tools import register_material_tools
 from tools.spline_tools import register_spline_tools
 from tools.niagara_tools import register_niagara_tools
 from tools.gameplay_effect_tools import register_gameplay_effect_tools
+from tools.python_tools import register_python_tools
 
 # Register tools
 register_editor_tools(mcp)
@@ -297,6 +298,7 @@ register_material_tools(mcp)
 register_spline_tools(mcp)
 register_niagara_tools(mcp)
 register_gameplay_effect_tools(mcp)
+register_python_tools(mcp)
 
 @mcp.prompt()
 def info():

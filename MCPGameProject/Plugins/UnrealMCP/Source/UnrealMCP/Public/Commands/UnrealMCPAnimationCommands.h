@@ -117,6 +117,9 @@ private:
     // AnimBlueprint creation (Batch E: P0 from UnrealMCP_API_ExpansionRequest.md)
     TSharedPtr<FJsonObject> HandleCreateAnimBlueprint(const TSharedPtr<FJsonObject>& Params);
 
+    // AnimMontage creation from a single AnimSequence (复刻右键 Create AnimMontage)
+    TSharedPtr<FJsonObject> HandleCreateAnimMontage(const TSharedPtr<FJsonObject>& Params);
+
     // IK Rig write patches (Batch E: P1 from UnrealMCP_API_ExpansionRequest.md)
     TSharedPtr<FJsonObject> HandleConnectIKRigGoalToSolver(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetIKRigSolverField(const TSharedPtr<FJsonObject>& Params);

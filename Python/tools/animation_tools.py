@@ -2652,6 +2652,53 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": f"Error creating anim blueprint: {e}"}
 
     @mcp.tool()
+    def create_anim_montage(
+        ctx: Context,
+        asset_path: str,
+        source_animation: str,
+        slot_name: str = "",
+        blend_in: float = 0.25,
+        blend_out: float = 0.25,
+    ) -> Dict[str, Any]:
+        """Create a new AnimMontage from a single AnimSequence (mirrors the editor's
+        right-click "Create > Create AnimMontage"). The montage's skeleton is derived
+        from the source sequence; it gets one section "Default" and one slot track with
+        the whole sequence as its only segment.
+
+        Args:
+            asset_path:       Destination, e.g. "/Game/.../Montages/Attack/AM_DaulSword_LightAttack1"
+            source_animation: Source AnimSequence path (its skeleton + the single segment come from it).
+            slot_name:        Optional. Slot track name; defaults to "DefaultSlot".
+            blend_in:         Optional blend-in time in seconds (default 0.25).
+            blend_out:        Optional blend-out time in seconds (default 0.25).
+
+        Notes:
+            - Notifies are NOT added here — use add_animation_notify after creation.
+            - Asset is only marked dirty; call save_dirty_assets to persist to disk.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params: Dict[str, Any] = {
+                "asset_path": asset_path,
+                "source_animation": source_animation,
+                "blend_in": blend_in,
+                "blend_out": blend_out,
+            }
+            if slot_name:
+                params["slot_name"] = slot_name
+            response = unreal.send_command("create_anim_montage", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error creating anim montage: {e}"}
+
+    @mcp.tool()
     def connect_ik_rig_goal_to_solver(
         ctx: Context,
         asset_path: str,

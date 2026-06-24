@@ -14,6 +14,7 @@ private:
 	TSharedPtr<FJsonObject> HandleGetDataAssetInfo(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetDataAssetProperty(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleListDataAssets(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleCreateDataAsset(const TSharedPtr<FJsonObject>& Params);
 
 	void SerializePropertiesToJson(UObject* Object, TArray<TSharedPtr<FJsonValue>>& OutArray, int32 Depth);
 };
