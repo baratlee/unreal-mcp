@@ -282,6 +282,7 @@ from tools.spline_tools import register_spline_tools
 from tools.niagara_tools import register_niagara_tools
 from tools.gameplay_effect_tools import register_gameplay_effect_tools
 from tools.python_tools import register_python_tools
+from tools.datatable_tools import register_datatable_tools  # Phase D 2026-06-24
 
 # Register tools
 register_editor_tools(mcp)
@@ -299,6 +300,7 @@ register_spline_tools(mcp)
 register_niagara_tools(mcp)
 register_gameplay_effect_tools(mcp)
 register_python_tools(mcp)
+register_datatable_tools(mcp)  # Phase D 2026-06-24
 
 @mcp.prompt()
 def info():

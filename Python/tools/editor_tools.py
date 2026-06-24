@@ -439,4 +439,112 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(err)
             return {"success": False, "message": err}
 
+    # ── Phase D 2026-06-24 ── PIE 控制 / 关卡切换 / Actor 组件属性写入 ──────────
+
+    @mcp.tool()
+    def start_pie(ctx: Context) -> Dict[str, Any]:
+        """Start Play-In-Editor (PIE) session. The session starts on the next frame; this call returns immediately."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("start_pie", {})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error starting PIE: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def stop_pie(ctx: Context) -> Dict[str, Any]:
+        """Stop the currently running Play-In-Editor (PIE) session. Returns success=false if PIE is not running."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("stop_pie", {})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error stopping PIE: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def open_level(ctx: Context, map_path: str) -> Dict[str, Any]:
+        """Open a level in the editor. Blocks the Game Thread; do not call during PIE.
+
+        Args:
+            map_path: Asset path of the map, e.g. "/Game/Levels/MyMap" (no .umap extension).
+
+        Returns:
+            success, map_path, and error message on failure.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("open_level", {"map_path": map_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error opening level: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
+    def set_actor_component_property(
+        ctx: Context,
+        actor_label: str,
+        component_name: str,
+        property_name: str,
+        property_value: Any,
+    ) -> Dict[str, Any]:
+        """Set a property on a component of a level Actor (writes the World instance, NOT the Blueprint CDO).
+        Changes are NOT persisted — they disappear when the level reloads. For persistent changes use set_component_property.
+        Supports dot-notation nested paths (e.g. "RelativeLocation.X").
+
+        Args:
+            actor_label: The editor label of the target Actor (as shown in the Outliner).
+            component_name: Name of the component (as shown in the Blueprint Components panel).
+            property_name: Property name or dot-notation path to set.
+            property_value: New value (number, bool, string, or object for structs).
+
+        Returns:
+            success, actor_label, component_name, property_name on success; error message on failure.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_actor_component_property", {
+                "actor_label": actor_label,
+                "component_name": component_name,
+                "property_name": property_name,
+                "property_value": property_value,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error setting actor component property: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
     logger.info("Editor tools registered successfully")

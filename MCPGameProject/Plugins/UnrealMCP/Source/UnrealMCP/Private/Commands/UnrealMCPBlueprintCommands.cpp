@@ -45,6 +45,9 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+// [LEOCC] FCompilerResultsLog / FTokenizedMessage — needed for compile error capture
+#include "KismetCompiler.h"
+#include "Logging/TokenizedMessage.h"
 
 namespace
 {
@@ -1286,12 +1289,49 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Compile the blueprint
-    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    // [LEOCC] Use FCompilerResultsLog to capture errors/warnings instead of a bare compile call
+    FCompilerResultsLog ResultsLog;
+    // [LEOCC] bSilentMode = true: suppress duplicate output to the UE Output Log
+    ResultsLog.bSilentMode = true;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &ResultsLog);
+
+    // [LEOCC] Build the compile_log array: severity + message per entry
+    TArray<TSharedPtr<FJsonValue>> LogEntries;
+    for (const TSharedRef<FTokenizedMessage>& Msg : ResultsLog.Messages)
+    {
+        EMessageSeverity::Type Sev = Msg->GetSeverity();
+        FString SevStr;
+        // [LEOCC] CriticalError 在 UE 5.7 已移除，只判 Error
+        if (Sev == EMessageSeverity::Error)
+        {
+            SevStr = TEXT("error");
+        }
+        else if (Sev == EMessageSeverity::Warning || Sev == EMessageSeverity::PerformanceWarning)
+        {
+            SevStr = TEXT("warning");
+        }
+        else
+        {
+            SevStr = TEXT("info");
+        }
+
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("severity"), SevStr);
+        // [LEOCC] FTokenizedMessage 无 GetMessageText，用 ToText() 拼接所有 token
+        Entry->SetStringField(TEXT("message"), Msg->ToText().ToString());
+        LogEntries.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    // [LEOCC] success = no errors in the results log
+    bool bSuccess = (ResultsLog.NumErrors == 0);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
     ResultObj->SetBoolField(TEXT("compiled"), true);
+    ResultObj->SetBoolField(TEXT("success"), bSuccess);
+    ResultObj->SetNumberField(TEXT("error_count"), static_cast<double>(ResultsLog.NumErrors));
+    ResultObj->SetNumberField(TEXT("warning_count"), static_cast<double>(ResultsLog.NumWarnings));
+    ResultObj->SetArrayField(TEXT("compile_log"), LogEntries);
     return ResultObj;
 }
 

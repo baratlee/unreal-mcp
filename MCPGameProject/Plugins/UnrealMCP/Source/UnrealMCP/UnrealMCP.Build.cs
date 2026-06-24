@@ -78,7 +78,8 @@ public class UnrealMCP : ModuleRules
 					"StateTreeModule",     // For UStateTree / UStateTreeSchema runtime types
 					"StateTreeEditorModule", // For UStateTreeEditorData / UStateTreeState / UStateTreeFactory editor APIs
 					"MaterialEditor",      // For UMaterialEditingLibrary write APIs (LT16 2026-06-11)
-					"PythonScriptPlugin"   // For IPythonScriptPlugin::ExecPythonCommandEx (LT16 2026-06-24)
+					"PythonScriptPlugin",  // For IPythonScriptPlugin::ExecPythonCommandEx (LT16 2026-06-24)
+					"LevelEditor"          // For ULevelEditorSubsystem::LoadLevel (Phase D 2026-06-24)
 				}
 			);
 		}

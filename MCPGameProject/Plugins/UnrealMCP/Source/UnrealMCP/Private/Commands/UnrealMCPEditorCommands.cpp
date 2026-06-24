@@ -35,6 +35,10 @@
 // LT16 2026-06-12 — spawn_blueprint_actor 任意路径支持：AssetRegistry 短名查找
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+// Phase D 2026-06-24 — PIE 控制 / 关卡切换 / Actor 组件属性写入
+#include "LevelEditor.h"
+#include "LevelEditorSubsystem.h"
+#include "EngineUtils.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -102,6 +106,22 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("delete_asset"))
     {
         return HandleDeleteAsset(Params);
+    }
+    else if (CommandType == TEXT("start_pie"))
+    {
+        return HandleStartPIE(Params);
+    }
+    else if (CommandType == TEXT("stop_pie"))
+    {
+        return HandleStopPIE(Params);
+    }
+    else if (CommandType == TEXT("open_level"))
+    {
+        return HandleOpenLevel(Params);
+    }
+    else if (CommandType == TEXT("set_actor_component_property"))
+    {
+        return HandleSetActorComponentProperty(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -1228,4 +1248,140 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteAsset(const TShare
     Result->SetStringField(TEXT("asset_path"), AssetPath);
     Result->SetBoolField(TEXT("force"), bForce);
     return Result;
+}
+
+// =============================================================================
+// Phase D 2026-06-24 — PIE 控制 / 关卡切换 / Actor 组件属性写入
+// =============================================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleStartPIE(const TSharedPtr<FJsonObject>& Params)
+{
+    // [LEOCC] Phase D: 启动 PIE。退出 PIE 后资产才可落盘，调用前请确认编辑器未在 PIE 中。
+    if (!GEditor)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("GEditor not available"));
+
+    if (GEditor->IsPlayingSessionInEditor())
+    {
+        TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+        R->SetBoolField(TEXT("success"), false);
+        R->SetStringField(TEXT("message"), TEXT("PIE is already running"));
+        return R;
+    }
+
+    FRequestPlaySessionParams PlayParams;
+    GEditor->RequestPlaySession(PlayParams);
+
+    TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+    R->SetBoolField(TEXT("success"), true);
+    R->SetStringField(TEXT("message"), TEXT("PIE start requested"));
+    return R;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleStopPIE(const TSharedPtr<FJsonObject>& Params)
+{
+    // [LEOCC] Phase D: 停止 PIE。
+    if (!GEditor)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("GEditor not available"));
+
+    if (!GEditor->IsPlayingSessionInEditor())
+    {
+        TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+        R->SetBoolField(TEXT("success"), false);
+        R->SetStringField(TEXT("message"), TEXT("PIE is not running"));
+        return R;
+    }
+
+    GEditor->RequestEndPlayMap();
+
+    TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+    R->SetBoolField(TEXT("success"), true);
+    R->SetStringField(TEXT("message"), TEXT("PIE stop requested"));
+    return R;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    // [LEOCC] Phase D: 在编辑器中打开指定关卡（map_path 格式 /Game/Levels/MyMap）。
+    FString MapPath;
+    if (!Params->TryGetStringField(TEXT("map_path"), MapPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'map_path' parameter"));
+
+    // [LEOCC] UEditorLevelLibrary::LoadLevel 在 UE5.x 已废弃，改用 ULevelEditorSubsystem
+    ULevelEditorSubsystem* LevelEditorSub = GEditor ? GEditor->GetEditorSubsystem<ULevelEditorSubsystem>() : nullptr;
+    if (!LevelEditorSub)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("LevelEditorSubsystem not available"));
+
+    const bool bLoaded = LevelEditorSub->LoadLevel(MapPath);
+    TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+    R->SetBoolField(TEXT("success"), bLoaded);
+    R->SetStringField(TEXT("map_path"), MapPath);
+    if (!bLoaded)
+        R->SetStringField(TEXT("error"), TEXT("LoadLevel returned false — check map_path"));
+    return R;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorComponentProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    // [LEOCC] Phase D: 设置关卡中 Actor 的组件属性（写入 World 实例，不是 CDO）。
+    // 支持点分嵌套路径（FStructProperty / FObjectProperty）。
+    FString ActorLabel;
+    if (!Params->TryGetStringField(TEXT("actor_label"), ActorLabel))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_label' parameter"));
+
+    FString ComponentName;
+    if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+
+    FString PropertyName;
+    if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+
+    if (!Params->HasField(TEXT("property_value")))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+    TSharedPtr<FJsonValue> PropertyValue = Params->Values.FindRef(TEXT("property_value"));
+
+    UWorld* World = GWorld;
+    if (!World)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No world available"));
+
+    // [LEOCC] 通过 ActorLabel 找 Actor（与 set_actor_property 保持一致）
+    AActor* TargetActor = nullptr;
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        if (It->GetActorLabel() == ActorLabel)
+        {
+            TargetActor = *It;
+            break;
+        }
+    }
+    if (!TargetActor)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorLabel));
+
+    // [LEOCC] 通过 GetName() 匹配组件
+    UActorComponent* TargetComp = nullptr;
+    TInlineComponentArray<UActorComponent*> Components;
+    TargetActor->GetComponents(Components);
+    for (UActorComponent* Comp : Components)
+    {
+        if (Comp && Comp->GetName() == ComponentName)
+        {
+            TargetComp = Comp;
+            break;
+        }
+    }
+    if (!TargetComp)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s on actor %s"), *ComponentName, *ActorLabel));
+
+    TargetComp->Modify();
+
+    FString ErrorMessage;
+    if (!FUnrealMCPCommonUtils::SetObjectProperty(TargetComp, PropertyName, PropertyValue, ErrorMessage))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(ErrorMessage);
+
+    TSharedPtr<FJsonObject> R = MakeShared<FJsonObject>();
+    R->SetBoolField(TEXT("success"), true);
+    R->SetStringField(TEXT("actor"), ActorLabel);
+    R->SetStringField(TEXT("component"), ComponentName);
+    R->SetStringField(TEXT("property"), PropertyName);
+    return R;
 }

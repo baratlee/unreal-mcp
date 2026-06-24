@@ -38,4 +38,10 @@ private:
     // Batch E: P1 from UnrealMCP_API_ExpansionRequest.md (asset persistence & deletion)
     TSharedPtr<FJsonObject> HandleSaveDirtyAssets(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleDeleteAsset(const TSharedPtr<FJsonObject>& Params);
-}; 
+
+    // Phase D 2026-06-24 — PIE 控制 / 关卡切换 / Actor 组件属性写入
+    TSharedPtr<FJsonObject> HandleStartPIE(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleStopPIE(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleOpenLevel(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetActorComponentProperty(const TSharedPtr<FJsonObject>& Params);
+};

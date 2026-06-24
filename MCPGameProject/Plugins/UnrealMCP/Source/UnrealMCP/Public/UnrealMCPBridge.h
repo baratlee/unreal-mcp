@@ -21,6 +21,7 @@
 #include "Commands/UnrealMCPNiagaraCommands.h"
 #include "Commands/UnrealMCPGameplayEffectCommands.h"
 #include "Commands/UnrealMCPPythonCommands.h"
+#include "Commands/UnrealMCPDataTableCommands.h"  // Phase D 2026-06-24
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -77,4 +78,5 @@ private:
 	TSharedPtr<FUnrealMCPNiagaraCommands> NiagaraCommands;
 	TSharedPtr<FUnrealMCPGameplayEffectCommands> GameplayEffectCommands;
 	TSharedPtr<FUnrealMCPPythonCommands> PythonCommands;
+	TSharedPtr<FUnrealMCPDataTableCommands> DataTableCommands;  // Phase D 2026-06-24
 };

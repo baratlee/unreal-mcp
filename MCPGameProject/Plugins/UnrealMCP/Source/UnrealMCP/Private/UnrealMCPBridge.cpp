@@ -118,6 +118,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     NiagaraCommands = MakeShared<FUnrealMCPNiagaraCommands>();
     GameplayEffectCommands = MakeShared<FUnrealMCPGameplayEffectCommands>();
     PythonCommands = MakeShared<FUnrealMCPPythonCommands>();
+    DataTableCommands = MakeShared<FUnrealMCPDataTableCommands>();  // Phase D 2026-06-24
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -135,6 +136,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     NiagaraCommands.Reset();
     GameplayEffectCommands.Reset();
     PythonCommands.Reset();
+    DataTableCommands.Reset();  // Phase D 2026-06-24
 }
 
 // Initialize subsystem
@@ -295,7 +297,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_static_mesh_info") ||
                      // Batch E: P1 asset persistence + deletion
                      CommandType == TEXT("save_dirty_assets") ||
-                     CommandType == TEXT("delete_asset"))
+                     CommandType == TEXT("delete_asset") ||
+                     // Phase D 2026-06-24 — PIE 控制 / 关卡切换 / Actor 组件属性写入
+                     CommandType == TEXT("start_pie") ||
+                     CommandType == TEXT("stop_pie") ||
+                     CommandType == TEXT("open_level") ||
+                     CommandType == TEXT("set_actor_component_property"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -465,6 +472,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("create_data_asset"))
             {
                 ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
+            }
+            // DataTable Commands — Phase D 2026-06-24
+            else if (CommandType == TEXT("get_datatable_info"))
+            {
+                ResultJson = DataTableCommands->HandleCommand(CommandType, Params);
             }
             // Material Commands
             //   P0 2026-05-22: read-only inspection (info x3)
