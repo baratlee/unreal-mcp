@@ -84,7 +84,9 @@ TSharedPtr<FJsonObject> FUnrealMCPDataTableCommands::HandleGetDataTableInfo(
 			TSharedPtr<FJsonObject> SingleRowObj = MakeShared<FJsonObject>();
 			if (AllRowsObj->HasField(RowFilter))
 			{
-				SingleRowObj->Values.Add(RowFilter, AllRowsObj->Values.FindRef(RowFilter));
+				// [LEOCC] 不直接操作 Values（UE5.8 起键类型为 UE::FSharedString，FindRef(FString) 不再匹配）；
+				// SetField/TryGetField 在 5.7/5.8 均可用
+				SingleRowObj->SetField(RowFilter, AllRowsObj->TryGetField(RowFilter));
 				Result->SetObjectField(TEXT("rows"), SingleRowObj);
 				Result->SetNumberField(TEXT("row_count"), 1);
 			}
