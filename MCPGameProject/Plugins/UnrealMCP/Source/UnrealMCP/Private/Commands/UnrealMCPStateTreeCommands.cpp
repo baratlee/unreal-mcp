@@ -1471,32 +1471,10 @@ TSharedPtr<FJsonObject> FUnrealMCPStateTreeCommands::HandleCompileStateTree(cons
 	bool bSuccess = false;
 	FString CompileMessage;
 
-	// Try using the Modify + MarkPackageDirty path which triggers recompile
-	// The most reliable way is via the editing subsystem if available
-	if (GEditor)
+	// UE::StateTree::Compiler::FCompilerManager::CompileSynchronously is the canonical API,
+	// but it can't be called directly from here (templated/namespaced static).
+	// Trigger recompile by marking dirty and calling PostEditChange instead.
 	{
-		// Attempt compilation via the subsystem
-		UClass* SubsystemClass = FindFirstObject<UClass>(TEXT("UStateTreeEditingSubsystem"), EFindFirstObjectOptions::NativeFirst);
-		if (SubsystemClass)
-		{
-			UEditorSubsystem* Subsystem = GEditor->GetEditorSubsystemBase(SubsystemClass);
-			if (Subsystem)
-			{
-				// Call CompileStateTree via function pointer
-				UFunction* CompileFunc = SubsystemClass->FindFunctionByName(TEXT("CompileStateTree"));
-				if (CompileFunc)
-				{
-					// Direct call via ProcessEvent is complex; use the static compile path instead
-				}
-			}
-		}
-	}
-
-	// Fallback: use the compiler namespace directly
-	// UE::StateTree::Compiler::FCompilerManager::CompileSynchronously is the canonical API
-	{
-		// Since we can't easily call the templated/namespaced static directly,
-		// trigger recompile by marking dirty and calling PostEditChange
 		StateTree->Modify();
 
 		FPropertyChangedEvent PropertyChangedEvent(nullptr);

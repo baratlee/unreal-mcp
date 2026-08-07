@@ -1,7 +1,11 @@
 #include "Commands/UnrealMCPDataAssetCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/DataAsset.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
+#include "UObject/TextProperty.h"
 #include "UObject/UObjectIterator.h"
 
 FUnrealMCPDataAssetCommands::FUnrealMCPDataAssetCommands()

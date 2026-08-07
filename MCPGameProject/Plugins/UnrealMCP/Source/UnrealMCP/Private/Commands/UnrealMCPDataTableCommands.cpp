@@ -3,6 +3,7 @@
 #include "Engine/DataTable.h"
 #include "Json.h"
 #include "JsonObjectConverter.h"
+#include "Misc/PackageName.h"
 
 FUnrealMCPDataTableCommands::FUnrealMCPDataTableCommands()
 {

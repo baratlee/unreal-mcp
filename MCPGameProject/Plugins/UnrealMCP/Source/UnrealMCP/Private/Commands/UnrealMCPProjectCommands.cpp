@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Engine/World.h"
 #include "GameFramework/InputSettings.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"

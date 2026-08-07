@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Json.h"
 
+class UBlueprint;
+
 /**
  * Handler class for Blueprint-related MCP commands
  */

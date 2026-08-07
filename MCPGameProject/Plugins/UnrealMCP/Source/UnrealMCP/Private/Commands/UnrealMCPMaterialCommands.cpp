@@ -15,6 +15,8 @@
 #include "Engine/EngineTypes.h"
 #include "Engine/BlendableInterface.h"
 #include "Engine/Texture.h"
+#include "Misc/PackageName.h"
+#include "UObject/TextProperty.h"
 #include "UObject/UObjectGlobals.h"
 #if WITH_EDITOR
 #include "MaterialEditingLibrary.h"
