@@ -101,68 +101,30 @@ namespace
     //
     // Both payloads are skipped entirely in NamesOnly mode to keep that mode
     // maximally lightweight.
-    void SerializeAnimGraphNodeExtras(
-        UAnimGraphNode_Base* AnimNode,
-        TSharedPtr<FJsonObject> NodeObj,
-        EPinPayloadMode Mode)
+    TArray<TSharedPtr<FJsonValue>> SerializeAnimGraphPropertyBindings(UAnimGraphNode_Base* AnimNode)
     {
-        if (!AnimNode || !NodeObj.IsValid() || Mode == EPinPayloadMode::NamesOnly)
+        TArray<TSharedPtr<FJsonValue>> BindingsArray;
+        if (!AnimNode)
         {
-            return;
+            return BindingsArray;
         }
 
-        // (1) Inner FAnimNode_* — find the first FStructProperty on this UClass
-        // whose UScriptStruct name starts with "AnimNode_". Per UE convention
-        // each UAnimGraphNode_* has exactly one such member.
-        for (TFieldIterator<FStructProperty> PropIt(AnimNode->GetClass()); PropIt; ++PropIt)
-        {
-            FStructProperty* StructProp = *PropIt;
-            if (!StructProp || !StructProp->Struct) continue;
-
-            const FString StructName = StructProp->Struct->GetName();
-            if (!StructName.StartsWith(TEXT("AnimNode_"))) continue;
-
-            const void* StructData = StructProp->ContainerPtrToValuePtr<void>(AnimNode);
-            TSharedRef<FJsonObject> InnerObj = MakeShared<FJsonObject>();
-
-            // CheckFlags=CPF_Edit  → only include properties that are EditAnywhere / EditDefaultsOnly / EditInstanceOnly
-            //                        (what a user sees in the Details panel)
-            // SkipFlags=CPF_Transient | CPF_DuplicateTransient → drop runtime scratch
-            FJsonObjectConverter::UStructToJsonObject(
-                StructProp->Struct,
-                StructData,
-                InnerObj,
-                /*CheckFlags=*/CPF_Edit,
-                /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
-
-            NodeObj->SetObjectField(TEXT("anim_node_properties"), InnerObj);
-            NodeObj->SetStringField(TEXT("anim_node_struct"), StructName);
-            break;
-        }
-
-        // (2) PropertyBindings — walk UAnimGraphNode_Base::Binding (which is
-        // a UAnimGraphNodeBinding_Base instance whose private header we do not
-        // want to include) and reflect its "PropertyBindings" TMap.
         FProperty* BindingMemberProp = AnimNode->GetClass()->FindPropertyByName(TEXT("Binding"));
         FObjectProperty* BindingObjProp = CastField<FObjectProperty>(BindingMemberProp);
-        if (!BindingObjProp) return;
+        if (!BindingObjProp) return BindingsArray;
 
         UObject* BindingObj = BindingObjProp->GetObjectPropertyValue(
             BindingObjProp->ContainerPtrToValuePtr<void>(AnimNode));
-        if (!BindingObj) return;
+        if (!BindingObj) return BindingsArray;
 
         FProperty* PropertyBindingsProp = BindingObj->GetClass()->FindPropertyByName(TEXT("PropertyBindings"));
         FMapProperty* MapProp = CastField<FMapProperty>(PropertyBindingsProp);
-        if (!MapProp) return;
+        if (!MapProp) return BindingsArray;
 
         void* MapContainer = MapProp->ContainerPtrToValuePtr<void>(BindingObj);
         FScriptMapHelper MapHelper(MapProp, MapContainer);
 
         UScriptStruct* BindingStructDef = FAnimGraphNodePropertyBinding::StaticStruct();
-        TArray<TSharedPtr<FJsonValue>> BindingsArray;
-
-        // GetMaxIndex + IsValidIndex is the version-stable way to iterate
-        // FScriptMap; FIterator exists on 5.7 but adds nothing for this use.
         for (int32 It = 0; It < MapHelper.GetMaxIndex(); ++It)
         {
             if (!MapHelper.IsValidIndex(It)) continue;
@@ -191,7 +153,47 @@ namespace
             BindingsArray.Add(MakeShared<FJsonValueObject>(BObj));
         }
 
-        NodeObj->SetArrayField(TEXT("property_bindings"), BindingsArray);
+        return BindingsArray;
+    }
+
+    void SerializeAnimGraphNodeExtras(
+        UAnimGraphNode_Base* AnimNode,
+        TSharedPtr<FJsonObject> NodeObj,
+        EPinPayloadMode Mode)
+    {
+        if (!AnimNode || !NodeObj.IsValid() || Mode == EPinPayloadMode::NamesOnly)
+        {
+            return;
+        }
+
+        // (1) Inner FAnimNode_* — find the first FStructProperty on this UClass
+        // whose UScriptStruct name starts with "AnimNode_". Per UE convention
+        // each UAnimGraphNode_* has exactly one such member.
+        for (TFieldIterator<FStructProperty> PropIt(AnimNode->GetClass()); PropIt; ++PropIt)
+        {
+            FStructProperty* StructProp = *PropIt;
+            if (!StructProp || !StructProp->Struct) continue;
+
+            const FString StructName = StructProp->Struct->GetName();
+            if (!StructName.StartsWith(TEXT("AnimNode_"))) continue;
+
+            const void* StructData = StructProp->ContainerPtrToValuePtr<void>(AnimNode);
+            TSharedRef<FJsonObject> InnerObj = MakeShared<FJsonObject>();
+
+            FJsonObjectConverter::UStructToJsonObject(
+                StructProp->Struct,
+                StructData,
+                InnerObj,
+                /*CheckFlags=*/CPF_Edit,
+                /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
+
+            NodeObj->SetObjectField(TEXT("anim_node_properties"), InnerObj);
+            NodeObj->SetStringField(TEXT("anim_node_struct"), StructName);
+            break;
+        }
+
+        // (2) PropertyBindings — reflected from the editor-side Binding object.
+        NodeObj->SetArrayField(TEXT("property_bindings"), SerializeAnimGraphPropertyBindings(AnimNode));
 
         // (3) Node-UObject-level UPROPERTY (Tag, ShowPinForProperties,
         // InitialUpdateFunction etc.). Walks the UClass with TFieldIterator so
@@ -397,6 +399,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("get_blueprint_function_graph"))
     {
         return HandleGetBlueprintFunctionGraph(Params);
+    }
+    else if (CommandType == TEXT("get_anim_graph_node_property_bindings"))
+    {
+        return HandleGetAnimGraphNodePropertyBindings(Params);
     }
     else if (CommandType == TEXT("get_anim_state_machine"))
     {
@@ -2855,6 +2861,52 @@ namespace
         OutAsset = OutPackage.Mid(Slash + 1);
         return !OutAsset.IsEmpty();
     }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimGraphNodePropertyBindings(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, NodeGuid;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+    if (!Params->TryGetStringField(TEXT("node_guid"), NodeGuid))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_guid' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+    }
+
+    UEdGraphNode* Node = nullptr;
+    UEdGraph* Graph = nullptr;
+    if (!FindNodeByGuid(Blueprint, NodeGuid, Node, Graph) || !Node)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Node not found by GUID: %s"), *NodeGuid));
+    }
+
+    UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+    if (!AnimNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Node is not a UAnimGraphNode_Base (got %s)"), *Node->GetClass()->GetName()));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+    Result->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+    Result->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+    Result->SetStringField(TEXT("graph_name"), Graph ? Graph->GetName() : FString());
+    Result->SetStringField(TEXT("graph_class"), Graph ? Graph->GetClass()->GetName() : FString());
+    Result->SetArrayField(TEXT("bindings"), SerializeAnimGraphPropertyBindings(AnimNode));
+    return Result;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprintFromParentBlueprint(const TSharedPtr<FJsonObject>& Params)

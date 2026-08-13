@@ -665,6 +665,44 @@ def register_blueprint_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def get_anim_graph_node_property_bindings(
+        ctx: Context,
+        blueprint_path: str,
+        node_guid: str,
+    ) -> Dict[str, Any]:
+        """Get Property Bindings for one AnimGraph node, including nodes in nested graphs.
+
+        Args:
+            blueprint_path: Asset path of the Animation Blueprint.
+            node_guid: GUID of the target UAnimGraphNode_Base.
+
+        Returns:
+            Node identity, owning graph, and a compact `bindings` array. Each entry contains
+            `property_name` and the reflected FAnimGraphNodePropertyBinding `detail`, including
+            PropertyPath, PathAsText, Type, and bIsBound where supplied by the engine.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_anim_graph_node_property_bindings", {
+                "blueprint_path": blueprint_path,
+                "node_guid": node_guid,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error getting AnimGraph node property bindings: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
     # ── Batch E: P0/P1 from UnrealMCP_API_ExpansionRequest.md ─────────────────
 
     @mcp.tool()

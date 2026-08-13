@@ -317,6 +317,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_pawn_properties") ||
                      CommandType == TEXT("get_blueprint_info") ||
                      CommandType == TEXT("get_blueprint_function_graph") ||
+                     CommandType == TEXT("get_anim_graph_node_property_bindings") ||
                      CommandType == TEXT("get_anim_state_machine") ||
                      CommandType == TEXT("get_anim_state_graph") ||
                      CommandType == TEXT("get_anim_transition_graph") ||

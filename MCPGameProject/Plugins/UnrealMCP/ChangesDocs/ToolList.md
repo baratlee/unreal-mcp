@@ -35,6 +35,7 @@
 | `compile_blueprint` | 编译 Blueprint |
 | `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
 | `get_blueprint_function_graph` | 展开单个函数/AnimGraph 的完整节点图（支持 `pin_payload_mode` 控制响应体积） |
+| `get_anim_graph_node_property_bindings` | 按节点 GUID 跨嵌套 AnimGraph 查询 Property Binding，返回紧凑绑定数据 |
 | `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
 | `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |
 | `connect_anim_graph_nodes` | 跨所有图按 GUID 找节点 + 按 pin 名连接（要求源/目标在同一图） |
