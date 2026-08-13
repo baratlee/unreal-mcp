@@ -2017,8 +2017,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
 // State Machine tools
 // ---------------------------------------------------------------------------
 
-// Helper: find a StateMachine sub-graph inside a Blueprint's AnimGraph.
-// Returns nullptr if not found.  When StateMachineName is empty, returns
+// Helper: find a StateMachine in any Blueprint graph, including Anim Layer
+// Interface implementation graphs. When StateMachineName is empty, returns
 // the first StateMachine discovered.
 namespace
 {
@@ -2026,11 +2026,29 @@ namespace
         UBlueprint* Blueprint,
         const FString& StateMachineName)
     {
-        // Iterate FunctionGraphs looking for the AnimGraph, then search its
-        // nodes for StateMachine nodes.
-        for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+        if (!Blueprint) return nullptr;
+
+        TArray<UEdGraph*> GraphStack;
+        GraphStack.Append(Blueprint->UbergraphPages);
+        GraphStack.Append(Blueprint->FunctionGraphs);
+        GraphStack.Append(Blueprint->MacroGraphs);
+        GraphStack.Append(Blueprint->DelegateSignatureGraphs);
+        for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
         {
-            if (!Graph) continue;
+            GraphStack.Append(Interface.Graphs);
+        }
+
+        TSet<UEdGraph*> VisitedGraphs;
+        for (int32 Index = 0; Index < GraphStack.Num(); ++Index)
+        {
+            UEdGraph* Graph = GraphStack[Index];
+            if (!Graph || VisitedGraphs.Contains(Graph)) continue;
+            VisitedGraphs.Add(Graph);
+            for (UEdGraph* SubGraph : Graph->SubGraphs)
+            {
+                if (SubGraph && !VisitedGraphs.Contains(SubGraph)) GraphStack.Add(SubGraph);
+            }
+
             for (UEdGraphNode* Node : Graph->Nodes)
             {
                 UAnimGraphNode_StateMachineBase* SMNode = Cast<UAnimGraphNode_StateMachineBase>(Node);
@@ -2865,14 +2883,18 @@ namespace
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimGraphNodePropertyBindings(const TSharedPtr<FJsonObject>& Params)
 {
-    FString BlueprintPath, NodeGuid;
+    FString BlueprintPath, NodeGuid, GraphName, NodeClass;
     if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
-    if (!Params->TryGetStringField(TEXT("node_guid"), NodeGuid))
+    Params->TryGetStringField(TEXT("node_guid"), NodeGuid);
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+    Params->TryGetStringField(TEXT("node_class"), NodeClass);
+    if (NodeGuid.IsEmpty() && GraphName.IsEmpty())
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_guid' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Provide either 'node_guid' or 'graph_name'"));
     }
 
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
@@ -2882,30 +2904,94 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimGraphNodePrope
             FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
     }
 
-    UEdGraphNode* Node = nullptr;
-    UEdGraph* Graph = nullptr;
-    if (!FindNodeByGuid(Blueprint, NodeGuid, Node, Graph) || !Node)
+    auto SerializeNodeBindings = [](UAnimGraphNode_Base* AnimNode, UEdGraph* Graph) -> TSharedPtr<FJsonObject>
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Node not found by GUID: %s"), *NodeGuid));
+        TSharedPtr<FJsonObject> NodeResult = MakeShared<FJsonObject>();
+        NodeResult->SetStringField(TEXT("node_guid"), AnimNode->NodeGuid.ToString());
+        NodeResult->SetStringField(TEXT("node_class"), AnimNode->GetClass()->GetName());
+        NodeResult->SetStringField(TEXT("node_title"), AnimNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+        NodeResult->SetStringField(TEXT("graph_name"), Graph ? Graph->GetName() : FString());
+        NodeResult->SetStringField(TEXT("graph_class"), Graph ? Graph->GetClass()->GetName() : FString());
+        NodeResult->SetArrayField(TEXT("bindings"), SerializeAnimGraphPropertyBindings(AnimNode));
+        return NodeResult;
+    };
+
+    if (!NodeGuid.IsEmpty())
+    {
+        UEdGraphNode* Node = nullptr;
+        UEdGraph* Graph = nullptr;
+        if (!FindNodeByGuid(Blueprint, NodeGuid, Node, Graph) || !Node)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Node not found by GUID: %s"), *NodeGuid));
+        }
+
+        UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+        if (!AnimNode)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Node is not a UAnimGraphNode_Base (got %s)"), *Node->GetClass()->GetName()));
+        }
+
+        TSharedPtr<FJsonObject> Result = SerializeNodeBindings(AnimNode, Graph);
+        Result->SetBoolField(TEXT("success"), true);
+        Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+        return Result;
     }
 
-    UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
-    if (!AnimNode)
+    FString NormalizedNodeClass = NodeClass;
+    NormalizedNodeClass.RemoveFromStart(TEXT("U"));
+    TArray<UEdGraph*> GraphStack;
+    GraphStack.Append(Blueprint->UbergraphPages);
+    GraphStack.Append(Blueprint->FunctionGraphs);
+    GraphStack.Append(Blueprint->MacroGraphs);
+    GraphStack.Append(Blueprint->DelegateSignatureGraphs);
+    for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+    {
+        GraphStack.Append(Interface.Graphs);
+    }
+    TSet<UEdGraph*> VisitedGraphs;
+    TArray<TSharedPtr<FJsonValue>> MatchingNodes;
+    bool bFoundGraph = false;
+
+    for (int32 Index = 0; Index < GraphStack.Num(); ++Index)
+    {
+        UEdGraph* Graph = GraphStack[Index];
+        if (!Graph || VisitedGraphs.Contains(Graph)) continue;
+        VisitedGraphs.Add(Graph);
+        for (UEdGraph* SubGraph : Graph->SubGraphs)
+        {
+            if (SubGraph && !VisitedGraphs.Contains(SubGraph)) GraphStack.Add(SubGraph);
+        }
+        if (!Graph->GetName().Equals(GraphName, ESearchCase::IgnoreCase)) continue;
+        bFoundGraph = true;
+
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+            if (!AnimNode) continue;
+            if (!NormalizedNodeClass.IsEmpty() &&
+                !AnimNode->GetClass()->GetName().Equals(NormalizedNodeClass, ESearchCase::IgnoreCase))
+            {
+                continue;
+            }
+            MatchingNodes.Add(MakeShared<FJsonValueObject>(SerializeNodeBindings(AnimNode, Graph)));
+        }
+    }
+
+    if (!bFoundGraph)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Node is not a UAnimGraphNode_Base (got %s)"), *Node->GetClass()->GetName()));
+            FString::Printf(TEXT("Graph not found: %s"), *GraphName));
     }
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetBoolField(TEXT("success"), true);
     Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
-    Result->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
-    Result->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
-    Result->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-    Result->SetStringField(TEXT("graph_name"), Graph ? Graph->GetName() : FString());
-    Result->SetStringField(TEXT("graph_class"), Graph ? Graph->GetClass()->GetName() : FString());
-    Result->SetArrayField(TEXT("bindings"), SerializeAnimGraphPropertyBindings(AnimNode));
+    Result->SetStringField(TEXT("graph_name"), GraphName);
+    if (!NormalizedNodeClass.IsEmpty()) Result->SetStringField(TEXT("node_class_filter"), NormalizedNodeClass);
+    Result->SetNumberField(TEXT("node_count"), MatchingNodes.Num());
+    Result->SetArrayField(TEXT("nodes"), MatchingNodes);
     return Result;
 }
 

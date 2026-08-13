@@ -669,18 +669,24 @@ def register_blueprint_tools(mcp: FastMCP):
     def get_anim_graph_node_property_bindings(
         ctx: Context,
         blueprint_path: str,
-        node_guid: str,
+        node_guid: str = None,
+        graph_name: str = None,
+        node_class: str = None,
     ) -> Dict[str, Any]:
-        """Get Property Bindings for one AnimGraph node, including nodes in nested graphs.
+        """Get Property Bindings by node GUID or enumerate nodes in a nested AnimGraph.
 
         Args:
             blueprint_path: Asset path of the Animation Blueprint.
-            node_guid: GUID of the target UAnimGraphNode_Base.
+            node_guid: Optional GUID of one target UAnimGraphNode_Base.
+            graph_name: Optional nested graph name, such as "FreeStop". Required when
+                node_guid is omitted.
+            node_class: Optional exact UAnimGraphNode class filter for graph-name mode,
+                such as "AnimGraphNode_BlendListByEnum".
 
         Returns:
-            Node identity, owning graph, and a compact `bindings` array. Each entry contains
-            `property_name` and the reflected FAnimGraphNodePropertyBinding `detail`, including
-            PropertyPath, PathAsText, Type, and bIsBound where supplied by the engine.
+            GUID mode returns one node and its compact `bindings` array. Graph-name mode
+            returns every matching node in `nodes`, allowing callers to discover GUIDs and
+            bindings without expanding the whole Blueprint graph.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -689,10 +695,17 @@ def register_blueprint_tools(mcp: FastMCP):
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
-            response = unreal.send_command("get_anim_graph_node_property_bindings", {
-                "blueprint_path": blueprint_path,
-                "node_guid": node_guid,
-            })
+            params: Dict[str, Any] = {"blueprint_path": blueprint_path}
+            if node_guid:
+                params["node_guid"] = node_guid
+            if graph_name:
+                params["graph_name"] = graph_name
+            if node_class:
+                params["node_class"] = node_class
+            if not node_guid and not graph_name:
+                return {"success": False, "message": "Provide either node_guid or graph_name"}
+
+            response = unreal.send_command("get_anim_graph_node_property_bindings", params)
             if not response:
                 return {"success": False, "message": "No response from Unreal Engine"}
             if response.get("status") == "error":
