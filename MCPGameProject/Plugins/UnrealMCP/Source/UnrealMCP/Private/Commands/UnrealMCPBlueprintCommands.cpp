@@ -51,6 +51,36 @@
 
 namespace
 {
+    void CollectBlueprintGraphs(UBlueprint* Blueprint, TArray<UEdGraph*>& OutGraphs)
+    {
+        OutGraphs.Reset();
+        if (!Blueprint) return;
+
+        TArray<UEdGraph*> GraphStack;
+        GraphStack.Append(Blueprint->UbergraphPages);
+        GraphStack.Append(Blueprint->FunctionGraphs);
+        GraphStack.Append(Blueprint->MacroGraphs);
+        GraphStack.Append(Blueprint->DelegateSignatureGraphs);
+        for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+        {
+            GraphStack.Append(Interface.Graphs);
+        }
+
+        TSet<UEdGraph*> VisitedGraphs;
+        for (int32 Index = 0; Index < GraphStack.Num(); ++Index)
+        {
+            UEdGraph* Graph = GraphStack[Index];
+            if (!Graph || VisitedGraphs.Contains(Graph)) continue;
+
+            VisitedGraphs.Add(Graph);
+            OutGraphs.Add(Graph);
+            for (UEdGraph* SubGraph : Graph->SubGraphs)
+            {
+                if (SubGraph && !VisitedGraphs.Contains(SubGraph)) GraphStack.Add(SubGraph);
+            }
+        }
+    }
+
     // How much pin payload to serialize. AnimGraph nodes carry InstancedStruct
     // text in DefaultValue that can be multi-KB per pin and easily blow past
     // the MCP socket response timeout, so callers can opt into a smaller shape.
@@ -1955,38 +1985,23 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
             FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
     }
 
-    // AnimGraph and user functions both live in FunctionGraphs; UbergraphPages
-    // holds the EventGraph(s). Search FunctionGraphs first, then Ubergraph as
-    // a fallback so callers can also retrieve EventGraph node detail by name.
+    TArray<UEdGraph*> AvailableGraphs;
+    CollectBlueprintGraphs(Blueprint, AvailableGraphs);
+
     UEdGraph* TargetGraph = nullptr;
-    for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+    for (UEdGraph* Graph : AvailableGraphs)
     {
-        if (Graph && Graph->GetName() == FunctionName)
+        if (Graph && Graph->GetName().Equals(FunctionName, ESearchCase::IgnoreCase))
         {
             TargetGraph = Graph;
             break;
-        }
-    }
-    if (!TargetGraph)
-    {
-        for (UEdGraph* Graph : Blueprint->UbergraphPages)
-        {
-            if (Graph && Graph->GetName() == FunctionName)
-            {
-                TargetGraph = Graph;
-                break;
-            }
         }
     }
 
     if (!TargetGraph)
     {
         TArray<FString> AvailableNames;
-        for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-        {
-            if (Graph) AvailableNames.Add(Graph->GetName());
-        }
-        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        for (UEdGraph* Graph : AvailableGraphs)
         {
             if (Graph) AvailableNames.Add(Graph->GetName());
         }
@@ -2028,27 +2043,10 @@ namespace
     {
         if (!Blueprint) return nullptr;
 
-        TArray<UEdGraph*> GraphStack;
-        GraphStack.Append(Blueprint->UbergraphPages);
-        GraphStack.Append(Blueprint->FunctionGraphs);
-        GraphStack.Append(Blueprint->MacroGraphs);
-        GraphStack.Append(Blueprint->DelegateSignatureGraphs);
-        for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+        TArray<UEdGraph*> Graphs;
+        CollectBlueprintGraphs(Blueprint, Graphs);
+        for (UEdGraph* Graph : Graphs)
         {
-            GraphStack.Append(Interface.Graphs);
-        }
-
-        TSet<UEdGraph*> VisitedGraphs;
-        for (int32 Index = 0; Index < GraphStack.Num(); ++Index)
-        {
-            UEdGraph* Graph = GraphStack[Index];
-            if (!Graph || VisitedGraphs.Contains(Graph)) continue;
-            VisitedGraphs.Add(Graph);
-            for (UEdGraph* SubGraph : Graph->SubGraphs)
-            {
-                if (SubGraph && !VisitedGraphs.Contains(SubGraph)) GraphStack.Add(SubGraph);
-            }
-
             for (UEdGraphNode* Node : Graph->Nodes)
             {
                 UAnimGraphNode_StateMachineBase* SMNode = Cast<UAnimGraphNode_StateMachineBase>(Node);
@@ -2827,14 +2825,12 @@ namespace
     UEdGraph* FindGraphInBlueprint(UBlueprint* Blueprint, const FString& GraphName)
     {
         if (!Blueprint) return nullptr;
-        auto Match = [&GraphName](UEdGraph* G) -> bool
+        TArray<UEdGraph*> Graphs;
+        CollectBlueprintGraphs(Blueprint, Graphs);
+        for (UEdGraph* Graph : Graphs)
         {
-            return G && G->GetName().Equals(GraphName, ESearchCase::IgnoreCase);
-        };
-        for (UEdGraph* G : Blueprint->UbergraphPages) { if (Match(G)) return G; }
-        for (UEdGraph* G : Blueprint->FunctionGraphs) { if (Match(G)) return G; }
-        for (UEdGraph* G : Blueprint->MacroGraphs)    { if (Match(G)) return G; }
-        for (UEdGraph* G : Blueprint->DelegateSignatureGraphs) { if (Match(G)) return G; }
+            if (Graph && Graph->GetName().Equals(GraphName, ESearchCase::IgnoreCase)) return Graph;
+        }
         return nullptr;
     }
 
@@ -2845,17 +2841,11 @@ namespace
         OutNode = nullptr; OutGraph = nullptr;
         if (!Blueprint) return false;
 
-        TArray<UEdGraph*> Stack;
-        Stack.Append(Blueprint->UbergraphPages);
-        Stack.Append(Blueprint->FunctionGraphs);
-        Stack.Append(Blueprint->MacroGraphs);
-        Stack.Append(Blueprint->DelegateSignatureGraphs);
-        // BFS into sub-graphs.
-        for (int32 i = 0; i < Stack.Num(); ++i)
+        TArray<UEdGraph*> Graphs;
+        CollectBlueprintGraphs(Blueprint, Graphs);
+        for (UEdGraph* G : Graphs)
         {
-            UEdGraph* G = Stack[i];
             if (!G) continue;
-            for (UEdGraph* Sub : G->SubGraphs) { if (Sub) Stack.Add(Sub); }
             for (UEdGraphNode* N : G->Nodes)
             {
                 if (N && N->NodeGuid.ToString() == Guid)
@@ -2941,28 +2931,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimGraphNodePrope
 
     FString NormalizedNodeClass = NodeClass;
     NormalizedNodeClass.RemoveFromStart(TEXT("U"));
-    TArray<UEdGraph*> GraphStack;
-    GraphStack.Append(Blueprint->UbergraphPages);
-    GraphStack.Append(Blueprint->FunctionGraphs);
-    GraphStack.Append(Blueprint->MacroGraphs);
-    GraphStack.Append(Blueprint->DelegateSignatureGraphs);
-    for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
-    {
-        GraphStack.Append(Interface.Graphs);
-    }
-    TSet<UEdGraph*> VisitedGraphs;
+    TArray<UEdGraph*> Graphs;
+    CollectBlueprintGraphs(Blueprint, Graphs);
     TArray<TSharedPtr<FJsonValue>> MatchingNodes;
     bool bFoundGraph = false;
 
-    for (int32 Index = 0; Index < GraphStack.Num(); ++Index)
+    for (UEdGraph* Graph : Graphs)
     {
-        UEdGraph* Graph = GraphStack[Index];
-        if (!Graph || VisitedGraphs.Contains(Graph)) continue;
-        VisitedGraphs.Add(Graph);
-        for (UEdGraph* SubGraph : Graph->SubGraphs)
-        {
-            if (SubGraph && !VisitedGraphs.Contains(SubGraph)) GraphStack.Add(SubGraph);
-        }
+        if (!Graph) continue;
         if (!Graph->GetName().Equals(GraphName, ESearchCase::IgnoreCase)) continue;
         bFoundGraph = true;
 

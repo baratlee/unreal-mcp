@@ -34,7 +34,7 @@
 | `set_blueprint_property` | 设置 Blueprint CDO（Class Default Object）上的属性 |
 | `compile_blueprint` | 编译 Blueprint |
 | `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
-| `get_blueprint_function_graph` | 展开单个函数/AnimGraph 的完整节点图（支持 `pin_payload_mode` 控制响应体积） |
+| `get_blueprint_function_graph` | 展开函数、AnimGraph、Anim Layer 实现图或嵌套图的完整节点与 Pin 连线（支持 `pin_payload_mode`） |
 | `get_anim_graph_node_property_bindings` | 按节点 GUID 精确查询，或按嵌套 Graph 名称与节点类型枚举 Property Binding |
 | `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
 | `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |

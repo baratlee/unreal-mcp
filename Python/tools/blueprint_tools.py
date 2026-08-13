@@ -581,8 +581,8 @@ def register_blueprint_tools(mcp: FastMCP):
         every entry in `function_graphs`, this command expands one named graph
         into its full node list, including pin types, default values, and
         connection links between nodes. Works for user functions, the AnimGraph
-        of an Animation Blueprint, and EventGraph pages (looked up by name as a
-        fallback).
+        of an Animation Blueprint, Anim Layer Interface implementation graphs,
+        nested sub-graphs, and EventGraph pages.
 
         Args:
             blueprint_path: Asset path of the Blueprint
