@@ -28,6 +28,8 @@
 // State Machine editor classes (for get_anim_state_machine / get_anim_state_graph / get_anim_transition_graph)
 #include "AnimGraphNode_StateMachineBase.h"
 #include "AnimationStateMachineGraph.h"
+#include "AnimationStateMachineSchema.h"
+#include "AnimGraphNode_StateMachine.h"
 #include "AnimStateNode.h"
 #include "AnimStateTransitionNode.h"
 #include "AnimStateConduitNode.h"
@@ -91,6 +93,12 @@ namespace
         NamesOnly,  // DefaultValue dropped entirely; keep type/links only.
     };
 
+    enum class EGraphOutputProfile : uint8
+    {
+        Compact,    // Semantic graph data without editor-layout coordinates or empty containers.
+        Full,       // Complete legacy response shape.
+    };
+
     EPinPayloadMode ParsePinPayloadMode(const FString& Raw)
     {
         if (Raw.Equals(TEXT("summary"), ESearchCase::IgnoreCase))
@@ -102,6 +110,30 @@ namespace
             return EPinPayloadMode::NamesOnly;
         }
         return EPinPayloadMode::Full;
+    }
+
+    EGraphOutputProfile ParseGraphOutputProfile(const FString& Raw)
+    {
+        if (Raw.Equals(TEXT("compact"), ESearchCase::IgnoreCase))
+        {
+            return EGraphOutputProfile::Compact;
+        }
+        return EGraphOutputProfile::Full;
+    }
+
+    FString PinPayloadModeToString(EPinPayloadMode Mode)
+    {
+        switch (Mode)
+        {
+        case EPinPayloadMode::Summary:   return TEXT("summary");
+        case EPinPayloadMode::NamesOnly: return TEXT("names_only");
+        default:                         return TEXT("full");
+        }
+    }
+
+    FString GraphOutputProfileToString(EGraphOutputProfile Profile)
+    {
+        return Profile == EGraphOutputProfile::Compact ? TEXT("compact") : TEXT("full");
     }
 
     // Threshold and preview length used by Summary mode.
@@ -189,7 +221,8 @@ namespace
     void SerializeAnimGraphNodeExtras(
         UAnimGraphNode_Base* AnimNode,
         TSharedPtr<FJsonObject> NodeObj,
-        EPinPayloadMode Mode)
+        EPinPayloadMode Mode,
+        EGraphOutputProfile OutputProfile)
     {
         if (!AnimNode || !NodeObj.IsValid() || Mode == EPinPayloadMode::NamesOnly)
         {
@@ -217,13 +250,20 @@ namespace
                 /*CheckFlags=*/CPF_Edit,
                 /*SkipFlags=*/CPF_Transient | CPF_DuplicateTransient);
 
-            NodeObj->SetObjectField(TEXT("anim_node_properties"), InnerObj);
             NodeObj->SetStringField(TEXT("anim_node_struct"), StructName);
+            if (OutputProfile == EGraphOutputProfile::Full || InnerObj->Values.Num() > 0)
+            {
+                NodeObj->SetObjectField(TEXT("anim_node_properties"), InnerObj);
+            }
             break;
         }
 
         // (2) PropertyBindings — reflected from the editor-side Binding object.
-        NodeObj->SetArrayField(TEXT("property_bindings"), SerializeAnimGraphPropertyBindings(AnimNode));
+        TArray<TSharedPtr<FJsonValue>> PropertyBindings = SerializeAnimGraphPropertyBindings(AnimNode);
+        if (OutputProfile == EGraphOutputProfile::Full || PropertyBindings.Num() > 0)
+        {
+            NodeObj->SetArrayField(TEXT("property_bindings"), PropertyBindings);
+        }
 
         // (3) Node-UObject-level UPROPERTY (Tag, ShowPinForProperties,
         // InitialUpdateFunction etc.). Walks the UClass with TFieldIterator so
@@ -263,13 +303,19 @@ namespace
                 NodeObjProps->SetField(ObjProp->GetName(), JsonValue);
             }
         }
-        NodeObj->SetObjectField(TEXT("node_object_properties"), NodeObjProps);
+        if (OutputProfile == EGraphOutputProfile::Full || NodeObjProps->Values.Num() > 0)
+        {
+            NodeObj->SetObjectField(TEXT("node_object_properties"), NodeObjProps);
+        }
     }
 
     // Serialize a single UEdGraphNode (and its pin links) to a JSON object.
     // Shared between HandleGetBlueprintInfo and HandleGetBlueprintFunctionGraph
     // so the two commands always agree on node/pin shape.
-    TSharedPtr<FJsonObject> SerializeGraphNodeToJson(UEdGraphNode* Node, EPinPayloadMode Mode = EPinPayloadMode::Full)
+    TSharedPtr<FJsonObject> SerializeGraphNodeToJson(
+        UEdGraphNode* Node,
+        EPinPayloadMode Mode = EPinPayloadMode::Full,
+        EGraphOutputProfile OutputProfile = EGraphOutputProfile::Full)
     {
         TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
         if (!Node)
@@ -280,8 +326,11 @@ namespace
         NodeObj->SetStringField(TEXT("guid"), Node->NodeGuid.ToString());
         NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
         NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-        NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
-        NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+        if (OutputProfile == EGraphOutputProfile::Full)
+        {
+            NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+            NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+        }
 
         if (!Node->NodeComment.IsEmpty())
         {
@@ -366,14 +415,17 @@ namespace
 
             PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
         }
-        NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+        if (OutputProfile == EGraphOutputProfile::Full || PinsArray.Num() > 0)
+        {
+            NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+        }
 
         // Method A: AnimGraph-only Details-panel + PropertyBindings dump.
         // Non-AnimGraph nodes (K2Node_* in EventGraph / user functions) just
         // fall through the Cast and get no extra fields.
         if (UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node))
         {
-            SerializeAnimGraphNodeExtras(AnimNode, NodeObj, Mode);
+            SerializeAnimGraphNodeExtras(AnimNode, NodeObj, Mode, OutputProfile);
         }
 
         return NodeObj;
@@ -445,6 +497,34 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("get_anim_transition_graph"))
     {
         return HandleGetAnimTransitionGraph(Params);
+    }
+    else if (CommandType == TEXT("add_anim_state"))
+    {
+        return HandleAddAnimState(Params);
+    }
+    else if (CommandType == TEXT("add_anim_transition"))
+    {
+        return HandleAddAnimTransition(Params);
+    }
+    else if (CommandType == TEXT("set_anim_transition_properties"))
+    {
+        return HandleSetAnimTransitionProperties(Params);
+    }
+    else if (CommandType == TEXT("set_anim_state_entry"))
+    {
+        return HandleSetAnimStateEntry(Params);
+    }
+    else if (CommandType == TEXT("remove_anim_state"))
+    {
+        return HandleRemoveAnimState(Params);
+    }
+    else if (CommandType == TEXT("remove_anim_transition"))
+    {
+        return HandleRemoveAnimTransition(Params);
+    }
+    else if (CommandType == TEXT("rename_anim_state_machine"))
+    {
+        return HandleRenameAnimStateMachine(Params);
     }
     else if (CommandType == TEXT("get_component_properties"))
     {
@@ -1978,6 +2058,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadModeRaw);
     const EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadModeRaw);
 
+    FString OutputProfileRaw;
+    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
+    const EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
+
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
     if (!Blueprint)
     {
@@ -2016,12 +2100,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     ResultObj->SetStringField(TEXT("function_name"), TargetGraph->GetName());
     ResultObj->SetStringField(TEXT("graph_class"), TargetGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), TargetGraph->Nodes.Num());
+    ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
     for (UEdGraphNode* Node : TargetGraph->Nodes)
     {
         if (!Node) continue;
-        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode)));
+        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode, OutputProfile)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
 
@@ -2259,6 +2345,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimStateGraph(con
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadStr);
     EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadStr);
 
+    FString OutputProfileRaw;
+    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
+    EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
+
     UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(Blueprint, SMName);
     if (!SMGraph)
     {
@@ -2309,12 +2399,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimStateGraph(con
     ResultObj->SetStringField(TEXT("state_name"), FoundStateName);
     ResultObj->SetStringField(TEXT("graph_class"), TargetBoundGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), TargetBoundGraph->Nodes.Num());
+    ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
     for (UEdGraphNode* Node : TargetBoundGraph->Nodes)
     {
         if (!Node) continue;
-        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode)));
+        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode, OutputProfile)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
 
@@ -2358,6 +2450,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimTransitionGrap
     FString PinPayloadStr;
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadStr);
     EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadStr);
+
+    FString OutputProfileRaw;
+    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
+    EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
 
     UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(Blueprint, SMName);
     if (!SMGraph)
@@ -2416,12 +2512,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimTransitionGrap
     // Condition graph nodes
     ResultObj->SetStringField(TEXT("graph_class"), CondGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), CondGraph->Nodes.Num());
+    ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
     for (UEdGraphNode* Node : CondGraph->Nodes)
     {
         if (!Node) continue;
-        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode)));
+        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode, OutputProfile)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
 
@@ -2588,6 +2686,251 @@ void FUnrealMCPBlueprintCommands::SerializePropertiesToJson(
 // ---------------------------------------------------------------------------
 // HandleGetComponentProperties
 // ---------------------------------------------------------------------------
+namespace
+{
+    UAnimStateNode* FindAnimState(UAnimationStateMachineGraph* Graph, const FString& StateName)
+    {
+        if (!Graph) return nullptr;
+        TArray<UAnimStateNode*> States;
+        Graph->GetNodesOfClass(States);
+        for (UAnimStateNode* State : States)
+        {
+            if (State && State->GetStateName().Equals(StateName, ESearchCase::IgnoreCase)) return State;
+        }
+        return nullptr;
+    }
+
+    UAnimStateTransitionNode* FindAnimTransition(UAnimationStateMachineGraph* Graph, const FString& Source, const FString& Target)
+    {
+        if (!Graph) return nullptr;
+        TArray<UAnimStateTransitionNode*> Transitions;
+        Graph->GetNodesOfClass(Transitions);
+        for (UAnimStateTransitionNode* Transition : Transitions)
+        {
+            const UAnimStateNodeBase* Previous = Transition ? Transition->GetPreviousState() : nullptr;
+            const UAnimStateNodeBase* Next = Transition ? Transition->GetNextState() : nullptr;
+            if (Previous && Next
+                && Previous->GetStateName().Equals(Source, ESearchCase::IgnoreCase)
+                && Next->GetStateName().Equals(Target, ESearchCase::IgnoreCase))
+            {
+                return Transition;
+            }
+        }
+        return nullptr;
+    }
+
+    UBlueprint* ResolveAnimBlueprint(const FString& BlueprintPath)
+    {
+        UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+        return Blueprint ? Blueprint : FUnrealMCPCommonUtils::FindBlueprintByName(BlueprintPath);
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddAnimState(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, StateName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_machine_name"), MachineName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_machine_name' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_name"), StateName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_name' parameter"));
+
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
+    if (!Blueprint || !Graph) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint or State Machine not found"));
+    if (FindAnimState(Graph, StateName)) return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("State already exists: %s"), *StateName));
+
+    FVector2D Position(0.0f, 0.0f);
+    if (Params->HasField(TEXT("node_position"))) Position = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+    Blueprint->Modify();
+    Graph->Modify();
+    UAnimStateNode* State = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateNode>(
+        Graph, NewObject<UAnimStateNode>(), FVector2f(static_cast<float>(Position.X), static_cast<float>(Position.Y)), false);
+    if (!State) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Anim State"));
+    State->OnRenameNode(StateName);
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("state_machine_name"), MachineName);
+    Result->SetStringField(TEXT("state_name"), State->GetStateName());
+    Result->SetStringField(TEXT("node_guid"), State->NodeGuid.ToString());
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddAnimTransition(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, Source, Target;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_machine_name"), MachineName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_machine_name' parameter"));
+    if (!Params->TryGetStringField(TEXT("source_state"), Source)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_state' parameter"));
+    if (!Params->TryGetStringField(TEXT("target_state"), Target)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_state' parameter"));
+
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
+    UAnimStateNode* SourceState = FindAnimState(Graph, Source);
+    UAnimStateNode* TargetState = FindAnimState(Graph, Target);
+    if (!Blueprint || !Graph || !SourceState || !TargetState) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint, State Machine, source state, or target state not found"));
+    if (FindAnimTransition(Graph, Source, Target)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Transition already exists"));
+    Blueprint->Modify();
+    Graph->Modify();
+    if (!Graph->GetSchema()->TryCreateConnection(SourceState->GetOutputPin(), TargetState->GetInputPin()))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("State Machine schema rejected the transition"));
+
+    UAnimStateTransitionNode* Transition = FindAnimTransition(Graph, Source, Target);
+    if (!Transition) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Transition node was not created"));
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("state_machine_name"), MachineName);
+    Result->SetStringField(TEXT("source_state"), Source);
+    Result->SetStringField(TEXT("target_state"), Target);
+    Result->SetStringField(TEXT("node_guid"), Transition->NodeGuid.ToString());
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimTransitionProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, Source, Target;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_machine_name"), MachineName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_machine_name' parameter"));
+    if (!Params->TryGetStringField(TEXT("source_state"), Source)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_state' parameter"));
+    if (!Params->TryGetStringField(TEXT("target_state"), Target)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_state' parameter"));
+
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimStateTransitionNode* Transition = FindAnimTransition(FindStateMachineGraph(Blueprint, MachineName), Source, Target);
+    if (!Blueprint || !Transition) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint or transition not found"));
+
+    FString LogicType;
+    if (Params->TryGetStringField(TEXT("logic_type"), LogicType)
+        && !LogicType.Equals(TEXT("Standard"), ESearchCase::IgnoreCase)
+        && !LogicType.Equals(TEXT("Inertialization"), ESearchCase::IgnoreCase))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("logic_type must be Standard or Inertialization"));
+    }
+
+    FString BlendMode;
+    if (Params->TryGetStringField(TEXT("blend_mode"), BlendMode)
+        && !BlendMode.Equals(TEXT("Linear"), ESearchCase::IgnoreCase)
+        && !BlendMode.Equals(TEXT("Cubic"), ESearchCase::IgnoreCase)
+        && !BlendMode.Equals(TEXT("HermiteCubic"), ESearchCase::IgnoreCase))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("blend_mode must be Linear, Cubic, or HermiteCubic"));
+    }
+
+    Blueprint->Modify();
+    Transition->Modify();
+
+    double Number = 0.0;
+    bool Flag = false;
+    if (Params->TryGetNumberField(TEXT("priority"), Number)) Transition->PriorityOrder = FMath::Max(1, FMath::RoundToInt(Number));
+    if (Params->TryGetNumberField(TEXT("crossfade_duration"), Number)) Transition->CrossfadeDuration = static_cast<float>(FMath::Max(0.0, Number));
+    if (Params->TryGetBoolField(TEXT("automatic_rule"), Flag)) Transition->bAutomaticRuleBasedOnSequencePlayerInState = Flag;
+    if (Params->TryGetNumberField(TEXT("automatic_rule_trigger_time"), Number)) Transition->AutomaticRuleTriggerTime = Number;
+    if (Params->TryGetBoolField(TEXT("bidirectional"), Flag)) Transition->Bidirectional = Flag;
+    if (Params->TryGetBoolField(TEXT("disabled"), Flag)) Transition->bDisabled = Flag;
+    if (!LogicType.IsEmpty())
+    {
+        Transition->LogicType = LogicType.Equals(TEXT("Standard"), ESearchCase::IgnoreCase)
+            ? ETransitionLogicType::TLT_StandardBlend
+            : ETransitionLogicType::TLT_Inertialization;
+    }
+    if (!BlendMode.IsEmpty())
+    {
+        Transition->BlendMode = BlendMode.Equals(TEXT("Linear"), ESearchCase::IgnoreCase)
+            ? EAlphaBlendOption::Linear
+            : EAlphaBlendOption::HermiteCubic;
+    }
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("state_machine_name"), MachineName);
+    Result->SetStringField(TEXT("source_state"), Source);
+    Result->SetStringField(TEXT("target_state"), Target);
+    Result->SetNumberField(TEXT("priority"), Transition->PriorityOrder);
+    Result->SetNumberField(TEXT("crossfade_duration"), Transition->CrossfadeDuration);
+    Result->SetStringField(TEXT("blend_mode"), BlendOptionToString(Transition->BlendMode));
+    Result->SetStringField(TEXT("logic_type"), TransitionLogicTypeToString(Transition->LogicType));
+    Result->SetBoolField(TEXT("automatic_rule"), Transition->bAutomaticRuleBasedOnSequencePlayerInState);
+    Result->SetNumberField(TEXT("automatic_rule_trigger_time"), Transition->AutomaticRuleTriggerTime);
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimStateEntry(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, StateName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_machine_name"), MachineName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_machine_name' parameter"));
+    if (!Params->TryGetStringField(TEXT("state_name"), StateName)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'state_name' parameter"));
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
+    UAnimStateNode* State = FindAnimState(Graph, StateName);
+    if (!Blueprint || !Graph || !Graph->EntryNode || !State) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint, State Machine, entry node, or state not found"));
+    Blueprint->Modify();
+    Graph->Modify();
+    Graph->EntryNode->Modify();
+    UEdGraphPin* EntryPin = Graph->EntryNode->GetOutputPin();
+    EntryPin->BreakAllPinLinks();
+    if (!Graph->GetSchema()->TryCreateConnection(EntryPin, State->GetInputPin())) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to connect entry state"));
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("state_machine_name"), MachineName);
+    Result->SetStringField(TEXT("entry_state"), State->GetStateName());
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleRemoveAnimState(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, StateName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) || !Params->TryGetStringField(TEXT("state_machine_name"), MachineName) || !Params->TryGetStringField(TEXT("state_name"), StateName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Required: blueprint_path, state_machine_name, state_name"));
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
+    UAnimStateNode* State = FindAnimState(Graph, StateName);
+    if (!Blueprint || !Graph || !State) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint or state not found"));
+    if (Graph->EntryNode && Graph->EntryNode->GetOutputPin()->LinkedTo.Contains(State->GetInputPin()))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Cannot remove the entry state; set another entry state first"));
+    Blueprint->Modify();
+    Graph->Modify();
+    State->Modify();
+    State->DestroyNode();
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    return FUnrealMCPCommonUtils::CreateSuccessResponse();
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleRemoveAnimTransition(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, Source, Target;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) || !Params->TryGetStringField(TEXT("state_machine_name"), MachineName) || !Params->TryGetStringField(TEXT("source_state"), Source) || !Params->TryGetStringField(TEXT("target_state"), Target))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Required: blueprint_path, state_machine_name, source_state, target_state"));
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimStateTransitionNode* Transition = FindAnimTransition(FindStateMachineGraph(Blueprint, MachineName), Source, Target);
+    if (!Blueprint || !Transition) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint or transition not found"));
+    Blueprint->Modify();
+    Transition->Modify();
+    Transition->DestroyNode();
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    return FUnrealMCPCommonUtils::CreateSuccessResponse();
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleRenameAnimStateMachine(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, MachineName, NewName;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) || !Params->TryGetStringField(TEXT("state_machine_name"), MachineName) || !Params->TryGetStringField(TEXT("new_name"), NewName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Required: blueprint_path, state_machine_name, new_name"));
+    UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
+    UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
+    if (!Blueprint || !Graph || !Graph->OwnerAnimGraphNode) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint or State Machine not found"));
+    Blueprint->Modify();
+    Graph->Modify();
+    Graph->OwnerAnimGraphNode->Modify();
+    Graph->OwnerAnimGraphNode->OnRenameNode(NewName);
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("state_machine_name"), Graph->OwnerAnimGraphNode->GetStateMachineName());
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(Result);
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetComponentProperties(
     const TSharedPtr<FJsonObject>& Params)
 {

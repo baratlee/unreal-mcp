@@ -928,7 +928,7 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
-    async def get_anim_state_graph(ctx: Context, blueprint_path: str, state_name: str, state_machine_name: str = "", pin_payload_mode: str = "full") -> Dict[str, Any]:
+    async def get_anim_state_graph(ctx: Context, blueprint_path: str, state_name: str, state_machine_name: str = "", pin_payload_mode: str = "summary", output_profile: str = "compact") -> Dict[str, Any]:
         """Get the internal animation node graph of a single state inside a State Machine.
 
         Returns the same node/pin format as get_blueprint_function_graph.
@@ -937,7 +937,8 @@ def register_animation_tools(mcp: FastMCP):
             blueprint_path: Asset path of the Animation Blueprint
             state_name: Name of the state to read
             state_machine_name: Name of the State Machine node (optional)
-            pin_payload_mode: "full" (default), "summary", or "names_only"
+            pin_payload_mode: "full", "summary" (default), or "names_only"
+            output_profile: "compact" (default, omits editor layout and empty containers) or "full"
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -952,8 +953,8 @@ def register_animation_tools(mcp: FastMCP):
             }
             if state_machine_name:
                 params["state_machine_name"] = state_machine_name
-            if pin_payload_mode != "full":
-                params["pin_payload_mode"] = pin_payload_mode
+            params["pin_payload_mode"] = pin_payload_mode
+            params["output_profile"] = output_profile
 
             response = unreal.send_command("get_anim_state_graph", params)
 
@@ -967,7 +968,7 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
-    async def get_anim_transition_graph(ctx: Context, blueprint_path: str, source_state: str, target_state: str, state_machine_name: str = "", pin_payload_mode: str = "full") -> Dict[str, Any]:
+    async def get_anim_transition_graph(ctx: Context, blueprint_path: str, source_state: str, target_state: str, state_machine_name: str = "", pin_payload_mode: str = "summary", output_profile: str = "compact") -> Dict[str, Any]:
         """Get the condition graph and metadata of a transition between two states.
 
         Returns transition metadata (priority, crossfade_duration, blend_mode,
@@ -979,7 +980,8 @@ def register_animation_tools(mcp: FastMCP):
             source_state: Name of the source state
             target_state: Name of the target state
             state_machine_name: Name of the State Machine node (optional)
-            pin_payload_mode: "full" (default), "summary", or "names_only"
+            pin_payload_mode: "full", "summary" (default), or "names_only"
+            output_profile: "compact" (default, omits editor layout and empty containers) or "full"
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -995,8 +997,8 @@ def register_animation_tools(mcp: FastMCP):
             }
             if state_machine_name:
                 params["state_machine_name"] = state_machine_name
-            if pin_payload_mode != "full":
-                params["pin_payload_mode"] = pin_payload_mode
+            params["pin_payload_mode"] = pin_payload_mode
+            params["output_profile"] = output_profile
 
             response = unreal.send_command("get_anim_transition_graph", params)
 
@@ -1008,6 +1010,161 @@ def register_animation_tools(mcp: FastMCP):
             error_msg = f"Error getting anim transition graph: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
+
+    def _send_anim_state_machine_command(command: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(command, params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if isinstance(response, dict) and response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            if isinstance(response, dict) and "error" in response:
+                return {"success": False, "message": response["error"]}
+            return response.get("result", response)
+        except Exception as e:
+            logger.error("Error executing %s: %s", command, e)
+            return {"success": False, "message": f"Error executing {command}: {e}"}
+
+    @mcp.tool()
+    def add_anim_state(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        state_name: str,
+        node_position: Dict[str, float] = None,
+    ) -> Dict[str, Any]:
+        """Add an empty state to an existing Animation State Machine.
+
+        node_position is optional and uses {"x": number, "y": number}.
+        This creates only the state shell; it does not edit the state's internal graph.
+        """
+        params: Dict[str, Any] = {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "state_name": state_name,
+        }
+        if node_position is not None:
+            params["node_position"] = node_position
+        return _send_anim_state_machine_command("add_anim_state", params)
+
+    @mcp.tool()
+    def add_anim_transition(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        source_state: str,
+        target_state: str,
+    ) -> Dict[str, Any]:
+        """Add a directed transition between two existing animation states."""
+        return _send_anim_state_machine_command("add_anim_transition", {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "source_state": source_state,
+            "target_state": target_state,
+        })
+
+    @mcp.tool()
+    def set_anim_transition_properties(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        source_state: str,
+        target_state: str,
+        priority: int = None,
+        crossfade_duration: float = None,
+        blend_mode: str = None,
+        logic_type: str = None,
+        automatic_rule: bool = None,
+        automatic_rule_trigger_time: float = None,
+        bidirectional: bool = None,
+        disabled: bool = None,
+    ) -> Dict[str, Any]:
+        """Set selected transition metadata without changing its condition graph.
+
+        blend_mode accepts Linear, Cubic, or HermiteCubic. logic_type accepts
+        Standard or Inertialization. Omitted properties remain unchanged.
+        """
+        params: Dict[str, Any] = {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "source_state": source_state,
+            "target_state": target_state,
+        }
+        optional_values = {
+            "priority": priority,
+            "crossfade_duration": crossfade_duration,
+            "blend_mode": blend_mode,
+            "logic_type": logic_type,
+            "automatic_rule": automatic_rule,
+            "automatic_rule_trigger_time": automatic_rule_trigger_time,
+            "bidirectional": bidirectional,
+            "disabled": disabled,
+        }
+        params.update({key: value for key, value in optional_values.items() if value is not None})
+        return _send_anim_state_machine_command("set_anim_transition_properties", params)
+
+    @mcp.tool()
+    def set_anim_state_entry(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        state_name: str,
+    ) -> Dict[str, Any]:
+        """Set an existing state as the State Machine entry state."""
+        return _send_anim_state_machine_command("set_anim_state_entry", {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "state_name": state_name,
+        })
+
+    @mcp.tool()
+    def remove_anim_state(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        state_name: str,
+    ) -> Dict[str, Any]:
+        """Remove a non-entry animation state and its attached transitions."""
+        return _send_anim_state_machine_command("remove_anim_state", {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "state_name": state_name,
+        })
+
+    @mcp.tool()
+    def remove_anim_transition(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        source_state: str,
+        target_state: str,
+    ) -> Dict[str, Any]:
+        """Remove one directed transition without removing either state."""
+        return _send_anim_state_machine_command("remove_anim_transition", {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "source_state": source_state,
+            "target_state": target_state,
+        })
+
+    @mcp.tool()
+    def rename_anim_state_machine(
+        ctx: Context,
+        blueprint_path: str,
+        state_machine_name: str,
+        new_name: str,
+    ) -> Dict[str, Any]:
+        """Rename an existing Animation State Machine node."""
+        return _send_anim_state_machine_command("rename_anim_state_machine", {
+            "blueprint_path": blueprint_path,
+            "state_machine_name": state_machine_name,
+            "new_name": new_name,
+        })
 
     @mcp.tool()
     def get_pose_search_database_info(ctx: Context, asset_path: str) -> Dict[str, Any]:

@@ -321,6 +321,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_anim_state_machine") ||
                      CommandType == TEXT("get_anim_state_graph") ||
                      CommandType == TEXT("get_anim_transition_graph") ||
+                     CommandType == TEXT("add_anim_state") ||
+                     CommandType == TEXT("add_anim_transition") ||
+                     CommandType == TEXT("set_anim_transition_properties") ||
+                     CommandType == TEXT("set_anim_state_entry") ||
+                     CommandType == TEXT("remove_anim_state") ||
+                     CommandType == TEXT("remove_anim_transition") ||
+                     CommandType == TEXT("rename_anim_state_machine") ||
                      CommandType == TEXT("get_component_properties") ||
                      CommandType == TEXT("get_blueprint_cdo_properties") ||
                      // Batch E: P0/P1 blueprint write extensions
