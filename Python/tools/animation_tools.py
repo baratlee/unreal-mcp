@@ -928,7 +928,7 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
-    async def get_anim_state_graph(ctx: Context, blueprint_path: str, state_name: str, state_machine_name: str = "", pin_payload_mode: str = "summary", output_profile: str = "compact") -> Dict[str, Any]:
+    async def get_anim_state_graph(ctx: Context, blueprint_path: str, state_name: str, state_machine_name: str = "", pin_payload_mode: str = "summary", compact_output: bool = True) -> Dict[str, Any]:
         """Get the internal animation node graph of a single state inside a State Machine.
 
         Returns the same node/pin format as get_blueprint_function_graph.
@@ -938,7 +938,8 @@ def register_animation_tools(mcp: FastMCP):
             state_name: Name of the state to read
             state_machine_name: Name of the State Machine node (optional)
             pin_payload_mode: "full", "summary" (default), or "names_only"
-            output_profile: "compact" (default, omits editor layout and empty containers) or "full"
+            compact_output: True (default) returns topology-focused output without editor layout
+                or verbose AnimGraph property dumps. False returns the complete legacy shape.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -954,7 +955,7 @@ def register_animation_tools(mcp: FastMCP):
             if state_machine_name:
                 params["state_machine_name"] = state_machine_name
             params["pin_payload_mode"] = pin_payload_mode
-            params["output_profile"] = output_profile
+            params["compact_output"] = compact_output
 
             response = unreal.send_command("get_anim_state_graph", params)
 
@@ -968,7 +969,7 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
-    async def get_anim_transition_graph(ctx: Context, blueprint_path: str, source_state: str, target_state: str, state_machine_name: str = "", pin_payload_mode: str = "summary", output_profile: str = "compact") -> Dict[str, Any]:
+    async def get_anim_transition_graph(ctx: Context, blueprint_path: str, source_state: str, target_state: str, state_machine_name: str = "", pin_payload_mode: str = "summary", compact_output: bool = True) -> Dict[str, Any]:
         """Get the condition graph and metadata of a transition between two states.
 
         Returns transition metadata (priority, crossfade_duration, blend_mode,
@@ -981,7 +982,8 @@ def register_animation_tools(mcp: FastMCP):
             target_state: Name of the target state
             state_machine_name: Name of the State Machine node (optional)
             pin_payload_mode: "full", "summary" (default), or "names_only"
-            output_profile: "compact" (default, omits editor layout and empty containers) or "full"
+            compact_output: True (default) returns topology-focused output without editor layout
+                or verbose AnimGraph property dumps. False returns the complete legacy shape.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -998,7 +1000,7 @@ def register_animation_tools(mcp: FastMCP):
             if state_machine_name:
                 params["state_machine_name"] = state_machine_name
             params["pin_payload_mode"] = pin_payload_mode
-            params["output_profile"] = output_profile
+            params["compact_output"] = compact_output
 
             response = unreal.send_command("get_anim_transition_graph", params)
 

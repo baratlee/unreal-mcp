@@ -10,14 +10,16 @@ Graph read tools now support a semantic `compact` response that omits editor-lay
 - `get_anim_state_graph`
 - `get_anim_transition_graph`
 
-The Python MCP tools default to `output_profile="compact"` and `pin_payload_mode="summary"`. Callers that need the legacy response shape can request `output_profile="full"` and `pin_payload_mode="full"`.
+The Python MCP tools expose `compact_output: bool = True` and default to `pin_payload_mode="summary"`. Callers that need the legacy response shape can request `compact_output=false` and `pin_payload_mode="full"`.
+
+The C++ command layer continues to accept the earlier `output_profile="compact"|"full"` field for compatibility. When `compact_output` is present, the boolean switch takes precedence.
 
 ## Response contract
 
 Both profiles preserve node identity, class, title, semantic fields, pins, and connection topology.
 
-- `compact` omits `pos_x` and `pos_y`, empty `pins`, empty `property_bindings`, and empty AnimGraph property objects.
+- `compact_output=true` omits `pos_x`, `pos_y`, empty `pins`, Property Binding details, and verbose `anim_node_properties` / `node_object_properties` dumps. It retains `anim_node_struct` so the runtime node type remains visible.
 - `full` preserves the previous node response shape, including editor-layout coordinates and empty containers.
-- Every graph response reports the effective `output_profile` and `pin_payload_mode`.
+- Every graph response reports the effective `compact_output`, `output_profile`, and `pin_payload_mode`.
 
 `get_anim_state_machine` is unchanged because its state and transition topology response does not contain graph-node coordinates.

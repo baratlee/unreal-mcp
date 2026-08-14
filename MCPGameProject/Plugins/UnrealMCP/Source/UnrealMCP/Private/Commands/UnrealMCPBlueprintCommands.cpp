@@ -121,6 +121,22 @@ namespace
         return EGraphOutputProfile::Full;
     }
 
+    EGraphOutputProfile ResolveGraphOutputProfile(const TSharedPtr<FJsonObject>& Params)
+    {
+        bool bCompactOutput = false;
+        if (Params.IsValid() && Params->TryGetBoolField(TEXT("compact_output"), bCompactOutput))
+        {
+            return bCompactOutput ? EGraphOutputProfile::Compact : EGraphOutputProfile::Full;
+        }
+
+        FString OutputProfileRaw;
+        if (Params.IsValid())
+        {
+            Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
+        }
+        return ParseGraphOutputProfile(OutputProfileRaw);
+    }
+
     FString PinPayloadModeToString(EPinPayloadMode Mode)
     {
         switch (Mode)
@@ -226,6 +242,20 @@ namespace
     {
         if (!AnimNode || !NodeObj.IsValid() || Mode == EPinPayloadMode::NamesOnly)
         {
+            return;
+        }
+
+        if (OutputProfile == EGraphOutputProfile::Compact)
+        {
+            for (TFieldIterator<FStructProperty> PropIt(AnimNode->GetClass()); PropIt; ++PropIt)
+            {
+                FStructProperty* StructProp = *PropIt;
+                if (StructProp && StructProp->Struct && StructProp->Struct->GetName().StartsWith(TEXT("AnimNode_")))
+                {
+                    NodeObj->SetStringField(TEXT("anim_node_struct"), StructProp->Struct->GetName());
+                    break;
+                }
+            }
             return;
         }
 
@@ -2058,9 +2088,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadModeRaw);
     const EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadModeRaw);
 
-    FString OutputProfileRaw;
-    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
-    const EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
+    const EGraphOutputProfile OutputProfile = ResolveGraphOutputProfile(Params);
 
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
     if (!Blueprint)
@@ -2101,6 +2129,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     ResultObj->SetStringField(TEXT("graph_class"), TargetGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), TargetGraph->Nodes.Num());
     ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetBoolField(TEXT("compact_output"), OutputProfile == EGraphOutputProfile::Compact);
     ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
@@ -2345,9 +2374,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimStateGraph(con
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadStr);
     EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadStr);
 
-    FString OutputProfileRaw;
-    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
-    EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
+    EGraphOutputProfile OutputProfile = ResolveGraphOutputProfile(Params);
 
     UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(Blueprint, SMName);
     if (!SMGraph)
@@ -2400,6 +2427,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimStateGraph(con
     ResultObj->SetStringField(TEXT("graph_class"), TargetBoundGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), TargetBoundGraph->Nodes.Num());
     ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetBoolField(TEXT("compact_output"), OutputProfile == EGraphOutputProfile::Compact);
     ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
@@ -2451,9 +2479,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimTransitionGrap
     Params->TryGetStringField(TEXT("pin_payload_mode"), PinPayloadStr);
     EPinPayloadMode PayloadMode = ParsePinPayloadMode(PinPayloadStr);
 
-    FString OutputProfileRaw;
-    Params->TryGetStringField(TEXT("output_profile"), OutputProfileRaw);
-    EGraphOutputProfile OutputProfile = ParseGraphOutputProfile(OutputProfileRaw);
+    EGraphOutputProfile OutputProfile = ResolveGraphOutputProfile(Params);
 
     UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(Blueprint, SMName);
     if (!SMGraph)
@@ -2513,6 +2539,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimTransitionGrap
     ResultObj->SetStringField(TEXT("graph_class"), CondGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), CondGraph->Nodes.Num());
     ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetBoolField(TEXT("compact_output"), OutputProfile == EGraphOutputProfile::Compact);
     ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;

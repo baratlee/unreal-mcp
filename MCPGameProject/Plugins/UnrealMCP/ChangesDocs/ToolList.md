@@ -34,7 +34,7 @@
 | `set_blueprint_property` | 设置 Blueprint CDO（Class Default Object）上的属性 |
 | `compile_blueprint` | 编译 Blueprint |
 | `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
-| `get_blueprint_function_graph` | 展开函数、AnimGraph、Anim Layer 实现图或嵌套图的节点与 Pin 连线；支持 `output_profile=compact/full` 和 `pin_payload_mode` |
+| `get_blueprint_function_graph` | 展开函数、AnimGraph、Anim Layer 实现图或嵌套图的节点与 Pin 连线；`compact_output` 默认开启，支持 `pin_payload_mode` |
 | `get_anim_graph_node_property_bindings` | 按节点 GUID 精确查询，或按嵌套 Graph 名称与节点类型枚举 Property Binding |
 | `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
 | `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |
@@ -143,8 +143,8 @@
 | Tool | Description |
 |---|---|
 | `get_anim_state_machine` | 获取 AnimBP 中状态机的结构：状态列表 + 转换拓扑 + 入口状态 |
-| `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图；默认 `compact + summary`，可切换完整输出 |
-| `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等）；默认 `compact + summary` |
+| `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图；默认开启 `compact_output` 并使用 `summary` Pin payload |
+| `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等）；默认开启 `compact_output` |
 
 ## Pose Search Tools (12)
 

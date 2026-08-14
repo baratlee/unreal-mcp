@@ -573,7 +573,7 @@ def register_blueprint_tools(mcp: FastMCP):
         blueprint_path: str,
         function_name: str,
         pin_payload_mode: str = "summary",
-        output_profile: str = "compact"
+        compact_output: bool = True
     ) -> Dict[str, Any]:
         """
         Get the full node detail of a single function or AnimGraph inside a Blueprint.
@@ -601,9 +601,9 @@ def register_blueprint_tools(mcp: FastMCP):
                   - "names_only" : drop DefaultValue entirely; keep type / links only
                 Use "summary" or "names_only" when reading AnimGraph or other
                 large graphs that time out in full mode.
-            output_profile: Graph response shape:
-                  - "compact" : omit editor-layout coordinates and empty containers (default)
-                  - "full"    : preserve the complete legacy response shape
+            compact_output: True (default) omits editor-layout coordinates,
+                empty containers, and verbose AnimGraph property dumps. False
+                preserves the complete legacy response shape.
 
         Returns:
             Dict with blueprint_path, function_name, graph_class, node_count,
@@ -655,7 +655,7 @@ def register_blueprint_tools(mcp: FastMCP):
                 "blueprint_path": blueprint_path,
                 "function_name": function_name,
                 "pin_payload_mode": pin_payload_mode,
-                "output_profile": output_profile
+                "compact_output": compact_output
             })
 
             if not response:
