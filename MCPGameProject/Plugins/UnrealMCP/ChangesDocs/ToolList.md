@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 117 tools total, organized by category.
+> 118 tools total, organized by category.
 
 ---
 
@@ -71,11 +71,12 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (17)
+## Animation Tools (18)
 
 | Tool | Description |
 |---|---|
 | `get_animation_info` | 获取 AnimSequence/AnimMontage 基本信息（时长、帧数、骨骼、Root Motion 字段） |
+| `get_animation_sync_markers` | 获取 AnimSequence 的 Sync Marker：名称、时间、归一化时间及所属 Notify Track |
 | `get_animation_notifies` | 获取动画通知事件列表（事件型 + NotifyState 型） |
 | `get_animation_curve_names` | 获取动画中的 Float 曲线名列表 |
 | `get_animation_bone_track_names` | 获取骨骼轨道名列表（Montage 自动穿透 Segment 聚合） |

@@ -373,6 +373,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
             // Animation Commands
             else if (CommandType == TEXT("get_animation_info") ||
+                     CommandType == TEXT("get_animation_sync_markers") ||
                      CommandType == TEXT("get_animation_notifies") ||
                      CommandType == TEXT("get_animation_curve_names") ||
                      CommandType == TEXT("get_animation_bone_track_names") ||

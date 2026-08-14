@@ -102,6 +102,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     {
         return HandleGetAnimationInfo(Params);
     }
+    if (CommandType == TEXT("get_animation_sync_markers"))
+    {
+        return HandleGetAnimationSyncMarkers(Params);
+    }
     if (CommandType == TEXT("get_animation_notifies"))
     {
         return HandleGetAnimationNotifies(Params);
@@ -477,6 +481,69 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationInfo(cons
         AddRootMotionFieldsForSequence(Result, AnimSeq);
     }
 
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationSyncMarkers(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UAnimSequence* AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetPath);
+    if (!AnimSequence)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("AnimSequence not found: %s"), *AssetPath));
+    }
+
+    TArray<FAnimSyncMarker> Markers;
+    UAnimationBlueprintLibrary::GetAnimationSyncMarkers(AnimSequence, Markers);
+    Markers.Sort([](const FAnimSyncMarker& A, const FAnimSyncMarker& B)
+    {
+        return A.Time < B.Time;
+    });
+
+    TArray<TSharedPtr<FJsonValue>> MarkerValues;
+    MarkerValues.Reserve(Markers.Num());
+    TSet<FName> UniqueMarkerNames;
+    const float PlayLength = AnimSequence->GetPlayLength();
+    for (const FAnimSyncMarker& Marker : Markers)
+    {
+        TSharedPtr<FJsonObject> MarkerObject = MakeShared<FJsonObject>();
+        MarkerObject->SetStringField(TEXT("name"), Marker.MarkerName.ToString());
+        MarkerObject->SetNumberField(TEXT("time"), Marker.Time);
+        MarkerObject->SetNumberField(TEXT("normalized_time"), PlayLength > 0.0f ? Marker.Time / PlayLength : 0.0f);
+        MarkerObject->SetNumberField(TEXT("track_index"), Marker.TrackIndex);
+        MarkerObject->SetStringField(TEXT("track_name"),
+            AnimSequence->AnimNotifyTracks.IsValidIndex(Marker.TrackIndex)
+                ? AnimSequence->AnimNotifyTracks[Marker.TrackIndex].TrackName.ToString()
+                : FString());
+        UniqueMarkerNames.Add(Marker.MarkerName);
+        MarkerValues.Add(MakeShared<FJsonValueObject>(MarkerObject));
+    }
+
+    TArray<FString> SortedMarkerNames;
+    for (const FName MarkerName : UniqueMarkerNames)
+    {
+        SortedMarkerNames.Add(MarkerName.ToString());
+    }
+    SortedMarkerNames.Sort();
+
+    TArray<TSharedPtr<FJsonValue>> MarkerNameValues;
+    MarkerNameValues.Reserve(SortedMarkerNames.Num());
+    for (const FString& MarkerName : SortedMarkerNames)
+    {
+        MarkerNameValues.Add(MakeShared<FJsonValueString>(MarkerName));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("asset_path"), AnimSequence->GetPathName());
+    Result->SetNumberField(TEXT("play_length"), PlayLength);
+    Result->SetNumberField(TEXT("marker_count"), Markers.Num());
+    Result->SetArrayField(TEXT("marker_names"), MarkerNameValues);
+    Result->SetArrayField(TEXT("markers"), MarkerValues);
     return Result;
 }
 
@@ -2583,6 +2650,7 @@ namespace
                 Obj->SetStringField(TEXT("chord_action"), Chord->ChordAction->GetPathName());
             }
         }
+        PRAGMA_DISABLE_DEPRECATION_WARNINGS
         else if (const UInputTriggerCombo* Combo = Cast<UInputTriggerCombo>(Trigger))
         {
             TArray<TSharedPtr<FJsonValue>> StepsJson;
@@ -2614,6 +2682,7 @@ namespace
             }
             Obj->SetArrayField(TEXT("cancel_actions"), CancelsJson);
         }
+        PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
         return Obj;
     }

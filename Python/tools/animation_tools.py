@@ -58,6 +58,30 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_animation_sync_markers(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """Get authored Sync Markers from an AnimSequence.
+
+        Returns marker_count, unique marker_names, and time-sorted markers with
+        name, time, normalized_time, track_index, and track_name.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_animation_sync_markers", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting animation sync markers: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_animation_notifies(ctx: Context, asset_path: str) -> Dict[str, Any]:
         """Get anim notify events for an AnimSequence or AnimMontage.
 
