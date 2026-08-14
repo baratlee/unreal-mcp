@@ -573,7 +573,8 @@ def register_blueprint_tools(mcp: FastMCP):
         blueprint_path: str,
         function_name: str,
         pin_payload_mode: str = "summary",
-        compact_output: bool = True
+        compact_output: bool = True,
+        topology_only: bool = False
     ) -> Dict[str, Any]:
         """
         Get the full node detail of a single function or AnimGraph inside a Blueprint.
@@ -604,6 +605,11 @@ def register_blueprint_tools(mcp: FastMCP):
             compact_output: True (default) omits editor-layout coordinates,
                 empty containers, and verbose AnimGraph property dumps. False
                 preserves the complete legacy response shape.
+            topology_only: True returns only node identity / semantic fields and
+                a graph-level `edges` array. Each edge is
+                [source_node_index, source_pin_name, target_node_index,
+                target_pin_name], where node indices address the `nodes` array.
+                This takes precedence over compact_output and pin_payload_mode.
 
         Returns:
             Dict with blueprint_path, function_name, graph_class, node_count,
@@ -655,7 +661,8 @@ def register_blueprint_tools(mcp: FastMCP):
                 "blueprint_path": blueprint_path,
                 "function_name": function_name,
                 "pin_payload_mode": pin_payload_mode,
-                "compact_output": compact_output
+                "compact_output": compact_output,
+                "topology_only": topology_only
             })
 
             if not response:

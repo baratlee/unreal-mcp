@@ -15,6 +15,50 @@ def register_animation_tools(mcp: FastMCP):
     """Register animation tools with the MCP server."""
 
     @mcp.tool()
+    def get_animation_runtime_snapshot(
+        ctx: Context,
+        pie_instance_id: Optional[int] = None,
+        player_index: int = 0,
+        actor_path: str = "",
+        component_name: str = "",
+    ) -> Dict[str, Any]:
+        """Inspect one runtime SkeletalMeshComponent in PIE or Standalone.
+
+        Returns the main, linked, and post-process AnimInstances; every baked
+        state machine's current state, elapsed time, machine/state weights; and
+        the actual target instance selected by each Linked Anim Layer node.
+
+        Select the actor with actor_path, or omit it to use player_index. When
+        multiple PIE/Game worlds or skeletal mesh components exist, provide
+        pie_instance_id and component_name explicitly.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params: Dict[str, Any] = {"player_index": player_index}
+            if pie_instance_id is not None:
+                params["pie_instance_id"] = pie_instance_id
+            if actor_path:
+                params["actor_path"] = actor_path
+            if component_name:
+                params["component_name"] = component_name
+
+            response = unreal.send_command("get_animation_runtime_snapshot", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            error_msg = f"Error getting animation runtime snapshot: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
     def get_animation_info(ctx: Context, asset_path: str) -> Dict[str, Any]:
         """Get basic info for an AnimSequence or AnimMontage, including root motion.
 

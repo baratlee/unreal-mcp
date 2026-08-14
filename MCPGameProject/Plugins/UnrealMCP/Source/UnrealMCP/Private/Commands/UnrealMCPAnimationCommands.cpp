@@ -11,7 +11,17 @@
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimNode_LinkedAnimLayer.h"
+#include "Animation/AnimNode_StateMachine.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
+#include "Kismet/GameplayStatics.h"
 #include "Factories/AnimBlueprintFactory.h" // Batch E: create_anim_blueprint
 #include "Factories/AnimMontageFactory.h"   // create_anim_montage
 #include "Engine/SkeletalMesh.h"
@@ -90,6 +100,53 @@ namespace
         Out->SetBoolField(TEXT("b_force_root_lock"), AnimSeq->bForceRootLock);
         Out->SetBoolField(TEXT("b_use_normalized_root_motion_scale"), AnimSeq->bUseNormalizedRootMotionScale);
     }
+
+    TSharedPtr<FJsonObject> AnimInstanceToRuntimeJson(UAnimInstance* Instance)
+    {
+        TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+        if (!Instance)
+        {
+            Out->SetBoolField(TEXT("valid"), false);
+            return Out;
+        }
+
+        Out->SetBoolField(TEXT("valid"), true);
+        Out->SetStringField(TEXT("object_path"), Instance->GetPathName());
+        Out->SetStringField(TEXT("class_path"), Instance->GetClass()->GetPathName());
+
+        TArray<TSharedPtr<FJsonValue>> MachinesJson;
+        if (const UAnimBlueprintGeneratedClass* AnimClass = Cast<UAnimBlueprintGeneratedClass>(Instance->GetClass()))
+        {
+            const TArray<FBakedAnimationStateMachine>& Machines = AnimClass->GetBakedStateMachines();
+            for (int32 MachineIndex = 0; MachineIndex < Machines.Num(); ++MachineIndex)
+            {
+                const FBakedAnimationStateMachine& Machine = Machines[MachineIndex];
+                TSharedPtr<FJsonObject> MachineJson = MakeShared<FJsonObject>();
+                MachineJson->SetNumberField(TEXT("machine_index"), MachineIndex);
+                MachineJson->SetStringField(TEXT("machine_name"), Machine.MachineName.ToString());
+                MachineJson->SetNumberField(TEXT("machine_weight"), Instance->GetInstanceMachineWeight(MachineIndex));
+
+                const FAnimNode_StateMachine* RuntimeMachine = Instance->GetStateMachineInstanceFromName(Machine.MachineName);
+                MachineJson->SetStringField(TEXT("current_state"), RuntimeMachine ? RuntimeMachine->GetCurrentStateName().ToString() : FString());
+                MachineJson->SetNumberField(TEXT("current_state_index"), RuntimeMachine ? RuntimeMachine->GetCurrentState() : INDEX_NONE);
+                MachineJson->SetNumberField(TEXT("current_state_elapsed_time"), RuntimeMachine ? RuntimeMachine->GetCurrentStateElapsedTime() : 0.0f);
+
+                TArray<TSharedPtr<FJsonValue>> StatesJson;
+                for (int32 StateIndex = 0; StateIndex < Machine.States.Num(); ++StateIndex)
+                {
+                    TSharedPtr<FJsonObject> StateJson = MakeShared<FJsonObject>();
+                    StateJson->SetNumberField(TEXT("state_index"), StateIndex);
+                    StateJson->SetStringField(TEXT("state_name"), Machine.States[StateIndex].StateName.ToString());
+                    StateJson->SetNumberField(TEXT("state_weight"), Instance->GetInstanceStateWeight(MachineIndex, StateIndex));
+                    StatesJson.Add(MakeShared<FJsonValueObject>(StateJson));
+                }
+                MachineJson->SetArrayField(TEXT("states"), StatesJson);
+                MachinesJson.Add(MakeShared<FJsonValueObject>(MachineJson));
+            }
+        }
+        Out->SetArrayField(TEXT("state_machines"), MachinesJson);
+        return Out;
+    }
 }
 
 FUnrealMCPAnimationCommands::FUnrealMCPAnimationCommands()
@@ -101,6 +158,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_animation_info"))
     {
         return HandleGetAnimationInfo(Params);
+    }
+    if (CommandType == TEXT("get_animation_runtime_snapshot"))
+    {
+        return HandleGetAnimationRuntimeSnapshot(Params);
     }
     if (CommandType == TEXT("get_animation_sync_markers"))
     {
@@ -481,6 +542,177 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationInfo(cons
         AddRootMotionFieldsForSequence(Result, AnimSeq);
     }
 
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimationRuntimeSnapshot(const TSharedPtr<FJsonObject>& Params)
+{
+    check(IsInGameThread());
+
+    int32 RequestedPIEInstance = INDEX_NONE;
+    Params->TryGetNumberField(TEXT("pie_instance_id"), RequestedPIEInstance);
+
+    TArray<const FWorldContext*> Candidates;
+    if (GEngine)
+    {
+        for (const FWorldContext& Context : GEngine->GetWorldContexts())
+        {
+            UWorld* World = Context.World();
+            if (!World || (Context.WorldType != EWorldType::PIE && Context.WorldType != EWorldType::Game))
+            {
+                continue;
+            }
+            if (RequestedPIEInstance != INDEX_NONE && Context.PIEInstance != RequestedPIEInstance)
+            {
+                continue;
+            }
+            Candidates.Add(&Context);
+        }
+    }
+
+    if (Candidates.Num() != 1)
+    {
+        TArray<FString> CandidateNames;
+        for (const FWorldContext* Context : Candidates)
+        {
+            CandidateNames.Add(FString::Printf(TEXT("PIEInstance=%d World=%s"), Context->PIEInstance, *GetNameSafe(Context->World())));
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Expected exactly one matching PIE/Game world, found %d. Supply pie_instance_id. Candidates: %s"),
+            Candidates.Num(), *FString::Join(CandidateNames, TEXT(", "))));
+    }
+
+    const FWorldContext& WorldContext = *Candidates[0];
+    UWorld* World = WorldContext.World();
+
+    FString ActorPath;
+    AActor* Actor = nullptr;
+    if (Params->TryGetStringField(TEXT("actor_path"), ActorPath) && !ActorPath.IsEmpty())
+    {
+        for (TActorIterator<AActor> It(World); It; ++It)
+        {
+            if (It->GetPathName() == ActorPath || It->GetName() == ActorPath)
+            {
+                Actor = *It;
+                break;
+            }
+        }
+        if (!Actor)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found in selected world: %s"), *ActorPath));
+        }
+    }
+    else
+    {
+        int32 PlayerIndex = 0;
+        Params->TryGetNumberField(TEXT("player_index"), PlayerIndex);
+        Actor = UGameplayStatics::GetPlayerPawn(World, PlayerIndex);
+        if (!Actor)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Player pawn not found for player_index %d"), PlayerIndex));
+        }
+    }
+
+    TArray<USkeletalMeshComponent*> MeshComponents;
+    Actor->GetComponents<USkeletalMeshComponent>(MeshComponents);
+
+    FString ComponentName;
+    USkeletalMeshComponent* MeshComponent = nullptr;
+    if (Params->TryGetStringField(TEXT("component_name"), ComponentName) && !ComponentName.IsEmpty())
+    {
+        for (USkeletalMeshComponent* Candidate : MeshComponents)
+        {
+            if (Candidate && (Candidate->GetName() == ComponentName || Candidate->GetPathName() == ComponentName))
+            {
+                MeshComponent = Candidate;
+                break;
+            }
+        }
+        if (!MeshComponent)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("SkeletalMeshComponent not found: %s"), *ComponentName));
+        }
+    }
+    else if (MeshComponents.Num() == 1)
+    {
+        MeshComponent = MeshComponents[0];
+    }
+    else
+    {
+        TArray<FString> Names;
+        for (const USkeletalMeshComponent* Candidate : MeshComponents)
+        {
+            Names.Add(GetNameSafe(Candidate));
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Expected exactly one SkeletalMeshComponent, found %d. Supply component_name. Candidates: %s"),
+            MeshComponents.Num(), *FString::Join(Names, TEXT(", "))));
+    }
+
+    UAnimInstance* MainInstance = MeshComponent->GetAnimInstance();
+    if (!MainInstance)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Selected SkeletalMeshComponent has no AnimInstance"));
+    }
+
+    MeshComponent->HandleExistingParallelEvaluationTask(true, true);
+    const TArray<UAnimInstance*>& LinkedInstances = static_cast<const USkeletalMeshComponent*>(MeshComponent)->GetLinkedAnimInstances();
+
+    TArray<UAnimInstance*> Instances;
+    Instances.Add(MainInstance);
+    for (UAnimInstance* LinkedInstance : LinkedInstances)
+    {
+        Instances.AddUnique(LinkedInstance);
+    }
+
+    TArray<TSharedPtr<FJsonValue>> LinkedInstancesJson;
+    for (UAnimInstance* LinkedInstance : LinkedInstances)
+    {
+        LinkedInstancesJson.Add(MakeShared<FJsonValueObject>(AnimInstanceToRuntimeJson(LinkedInstance)));
+    }
+
+    TArray<TSharedPtr<FJsonValue>> LinksJson;
+    for (UAnimInstance* OwnerInstance : Instances)
+    {
+        const UAnimBlueprintGeneratedClass* AnimClass = OwnerInstance ? Cast<UAnimBlueprintGeneratedClass>(OwnerInstance->GetClass()) : nullptr;
+        if (!AnimClass)
+        {
+            continue;
+        }
+
+        for (const FStructProperty* NodeProperty : AnimClass->GetLinkedAnimLayerNodeProperties())
+        {
+            const FAnimNode_LinkedAnimLayer* LayerNode = NodeProperty
+                ? NodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(OwnerInstance)
+                : nullptr;
+            if (!LayerNode)
+            {
+                continue;
+            }
+
+            UAnimInstance* TargetInstance = LayerNode->GetDynamicLinkTarget(OwnerInstance);
+            TSharedPtr<FJsonObject> LinkJson = MakeShared<FJsonObject>();
+            LinkJson->SetStringField(TEXT("owner_instance"), OwnerInstance->GetPathName());
+            LinkJson->SetStringField(TEXT("node_property"), NodeProperty->GetName());
+            LinkJson->SetStringField(TEXT("layer"), LayerNode->Layer.ToString());
+            LinkJson->SetStringField(TEXT("interface_class"), GetPathNameSafe(LayerNode->GetTargetClass()));
+            LinkJson->SetStringField(TEXT("dynamic_link_function"), LayerNode->GetDynamicLinkFunctionName().ToString());
+            LinkJson->SetStringField(TEXT("target_class"), GetPathNameSafe(TargetInstance ? TargetInstance->GetClass() : nullptr));
+            LinkJson->SetStringField(TEXT("target_instance"), GetPathNameSafe(TargetInstance));
+            LinksJson.Add(MakeShared<FJsonValueObject>(LinkJson));
+        }
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("frame_counter"), static_cast<double>(GFrameCounter));
+    Result->SetNumberField(TEXT("pie_instance_id"), WorldContext.PIEInstance);
+    Result->SetStringField(TEXT("world"), World->GetPathName());
+    Result->SetStringField(TEXT("actor"), Actor->GetPathName());
+    Result->SetStringField(TEXT("mesh_component"), MeshComponent->GetPathName());
+    Result->SetObjectField(TEXT("main_instance"), AnimInstanceToRuntimeJson(MainInstance));
+    Result->SetArrayField(TEXT("linked_instances"), LinkedInstancesJson);
+    Result->SetObjectField(TEXT("post_process_instance"), AnimInstanceToRuntimeJson(MeshComponent->GetPostProcessInstance()));
+    Result->SetArrayField(TEXT("linked_layer_nodes"), LinksJson);
     return Result;
 }
 

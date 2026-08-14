@@ -34,7 +34,7 @@
 | `set_blueprint_property` | 设置 Blueprint CDO（Class Default Object）上的属性 |
 | `compile_blueprint` | 编译 Blueprint |
 | `get_blueprint_info` | 获取 Blueprint 资产详情：组件、继承组件、变量、函数列表、事件图节点 |
-| `get_blueprint_function_graph` | 展开函数、AnimGraph、Anim Layer 实现图或嵌套图的节点与 Pin 连线；`compact_output` 默认开启，支持 `pin_payload_mode` |
+| `get_blueprint_function_graph` | 展开函数、AnimGraph、Anim Layer 实现图或嵌套图的节点与 Pin 连线；`compact_output` 默认开启，支持 `pin_payload_mode` 与图级 `topology_only` 边列表 |
 | `get_anim_graph_node_property_bindings` | 按节点 GUID 精确查询，或按嵌套 Graph 名称与节点类型枚举 Property Binding |
 | `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
 | `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |
@@ -71,11 +71,12 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (18)
+## Animation Tools (19)
 
 | Tool | Description |
 |---|---|
 | `get_animation_info` | 获取 AnimSequence/AnimMontage 基本信息（时长、帧数、骨骼、Root Motion 字段） |
+| `get_animation_runtime_snapshot` | 查询 PIE/Standalone 中指定角色 Mesh 的 AnimInstance、Linked Layer 实际目标与状态机运行时快照 |
 | `get_animation_sync_markers` | 获取 AnimSequence 的 Sync Marker：名称、时间、归一化时间及所属 Notify Track |
 | `get_animation_notifies` | 获取动画通知事件列表（事件型 + NotifyState 型） |
 | `get_animation_curve_names` | 获取动画中的 Float 曲线名列表 |

@@ -16,6 +16,7 @@ public:
 
 private:
     TSharedPtr<FJsonObject> HandleGetAnimationInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetAnimationRuntimeSnapshot(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimationSyncMarkers(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimationNotifies(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimationCurveNames(const TSharedPtr<FJsonObject>& Params);

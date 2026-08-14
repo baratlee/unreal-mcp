@@ -460,6 +460,81 @@ namespace
 
         return NodeObj;
     }
+
+    TSharedPtr<FJsonObject> SerializeTopologyNodeToJson(UEdGraphNode* Node)
+    {
+        TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+        if (!Node)
+        {
+            return NodeObj;
+        }
+
+        NodeObj->SetStringField(TEXT("guid"), Node->NodeGuid.ToString());
+        NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+        NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+        if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+        {
+            NodeObj->SetStringField(TEXT("event_name"),
+                EventNode->EventReference.GetMemberName().ToString());
+        }
+
+        if (UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node))
+        {
+            NodeObj->SetStringField(TEXT("function_name"),
+                FuncNode->FunctionReference.GetMemberName().ToString());
+            if (UClass* OwnerClass = FuncNode->FunctionReference.GetMemberParentClass())
+            {
+                NodeObj->SetStringField(TEXT("function_owner"), OwnerClass->GetName());
+            }
+        }
+
+        if (UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node))
+        {
+            SerializeAnimGraphNodeExtras(
+                AnimNode,
+                NodeObj,
+                EPinPayloadMode::Summary,
+                EGraphOutputProfile::Compact);
+        }
+
+        return NodeObj;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> SerializeGraphEdgesToJson(
+        const TArray<UEdGraphNode*>& Nodes,
+        const TMap<const UEdGraphNode*, int32>& NodeIndices)
+    {
+        TArray<TSharedPtr<FJsonValue>> EdgesArray;
+        for (UEdGraphNode* Node : Nodes)
+        {
+            if (!Node) continue;
+
+            const int32* SourceNodeIndex = NodeIndices.Find(Node);
+            if (!SourceNodeIndex) continue;
+
+            for (UEdGraphPin* Pin : Node->Pins)
+            {
+                if (!Pin || Pin->Direction != EGPD_Output) continue;
+
+                for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                {
+                    if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+
+                    const int32* TargetNodeIndex = NodeIndices.Find(LinkedPin->GetOwningNode());
+                    if (!TargetNodeIndex) continue;
+
+                    TArray<TSharedPtr<FJsonValue>> Edge;
+                    Edge.Add(MakeShared<FJsonValueNumber>(*SourceNodeIndex));
+                    Edge.Add(MakeShared<FJsonValueString>(Pin->PinName.ToString()));
+                    Edge.Add(MakeShared<FJsonValueNumber>(*TargetNodeIndex));
+                    Edge.Add(MakeShared<FJsonValueString>(LinkedPin->PinName.ToString()));
+                    EdgesArray.Add(MakeShared<FJsonValueArray>(Edge));
+                }
+            }
+        }
+        return EdgesArray;
+    }
 }
 
 FUnrealMCPBlueprintCommands::FUnrealMCPBlueprintCommands()
@@ -2090,6 +2165,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
 
     const EGraphOutputProfile OutputProfile = ResolveGraphOutputProfile(Params);
 
+    bool bTopologyOnly = false;
+    Params->TryGetBoolField(TEXT("topology_only"), bTopologyOnly);
+
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
     if (!Blueprint)
     {
@@ -2128,17 +2206,34 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintFunctionG
     ResultObj->SetStringField(TEXT("function_name"), TargetGraph->GetName());
     ResultObj->SetStringField(TEXT("graph_class"), TargetGraph->GetClass()->GetName());
     ResultObj->SetNumberField(TEXT("node_count"), TargetGraph->Nodes.Num());
-    ResultObj->SetStringField(TEXT("output_profile"), GraphOutputProfileToString(OutputProfile));
-    ResultObj->SetBoolField(TEXT("compact_output"), OutputProfile == EGraphOutputProfile::Compact);
-    ResultObj->SetStringField(TEXT("pin_payload_mode"), PinPayloadModeToString(PayloadMode));
+    ResultObj->SetStringField(TEXT("output_profile"),
+        bTopologyOnly ? TEXT("topology") : GraphOutputProfileToString(OutputProfile));
+    ResultObj->SetBoolField(TEXT("compact_output"),
+        bTopologyOnly || OutputProfile == EGraphOutputProfile::Compact);
+    ResultObj->SetBoolField(TEXT("topology_only"), bTopologyOnly);
+    ResultObj->SetStringField(TEXT("pin_payload_mode"),
+        bTopologyOnly ? TEXT("names_only") : PinPayloadModeToString(PayloadMode));
 
     TArray<TSharedPtr<FJsonValue>> NodesArray;
+    TMap<const UEdGraphNode*, int32> NodeIndices;
     for (UEdGraphNode* Node : TargetGraph->Nodes)
     {
         if (!Node) continue;
-        NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node, PayloadMode, OutputProfile)));
+
+        NodeIndices.Add(Node, NodesArray.Num());
+        NodesArray.Add(MakeShared<FJsonValueObject>(
+            bTopologyOnly
+                ? SerializeTopologyNodeToJson(Node)
+                : SerializeGraphNodeToJson(Node, PayloadMode, OutputProfile)));
     }
     ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
+
+    if (bTopologyOnly)
+    {
+        TArray<TSharedPtr<FJsonValue>> EdgesArray = SerializeGraphEdgesToJson(TargetGraph->Nodes, NodeIndices);
+        ResultObj->SetNumberField(TEXT("edge_count"), EdgesArray.Num());
+        ResultObj->SetArrayField(TEXT("edges"), EdgesArray);
+    }
 
     return ResultObj;
 }
