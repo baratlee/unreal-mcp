@@ -403,6 +403,9 @@ bool FUnrealMCPCommonUtils::ConnectGraphNodes(UEdGraph* Graph, UEdGraphNode* Sou
     
     if (SourcePin && TargetPin)
     {
+		// AnimGraph input pins are single-source. Match the Blueprint editor's
+		// reconnect behavior instead of leaving an invalid multi-link input.
+		TargetPin->BreakAllPinLinks();
         SourcePin->MakeLinkTo(TargetPin);
         return true;
     }

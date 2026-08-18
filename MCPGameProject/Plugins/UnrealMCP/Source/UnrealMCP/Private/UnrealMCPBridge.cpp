@@ -23,6 +23,7 @@
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
 #include "Async/Async.h"
+#include "Animation/BlendSpace.h"
 // Add Blueprint related includes
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -137,6 +138,20 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     GameplayEffectCommands.Reset();
     PythonCommands.Reset();
     DataTableCommands.Reset();  // Phase D 2026-06-24
+}
+
+bool UUnrealMCPBridge::RebuildBlendSpace(UBlendSpace* BlendSpace)
+{
+    if (!IsValid(BlendSpace) || BlendSpace->GetNumberOfBlendSamples() == 0)
+    {
+        return false;
+    }
+
+    BlendSpace->Modify();
+    BlendSpace->ValidateSampleData();
+    BlendSpace->ResampleData();
+    BlendSpace->MarkPackageDirty();
+    return true;
 }
 
 // Initialize subsystem

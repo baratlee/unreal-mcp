@@ -25,6 +25,7 @@
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
+class UBlendSpace;
 
 /**
  * Editor subsystem for MCP Bridge
@@ -52,6 +53,10 @@ public:
 
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+
+	/** Rebuilds the runtime sampling data after editor automation changes BlendSpace samples. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealMCP|Animation")
+	bool RebuildBlendSpace(UBlendSpace* BlendSpace);
 
 private:
 	// Server state

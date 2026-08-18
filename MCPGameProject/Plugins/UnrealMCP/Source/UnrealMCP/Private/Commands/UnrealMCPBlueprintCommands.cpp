@@ -3825,6 +3825,38 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodePrope
         // PathAsText defaults to FText::FromString(joined path) — keeps the binding's UI label sane.
         NewBindData->PathAsText = FText::FromString(FString::Join(OutPath, TEXT(".")));
 
+        // Property bindings compile through an exposed node pin. Mirror the
+        // Details panel by making a hidden-by-default target pin visible.
+        if (FArrayProperty* ShowPinsProperty = CastField<FArrayProperty>(
+            AnimNode->GetClass()->FindPropertyByName(TEXT("ShowPinForProperties"))))
+        {
+            if (FStructProperty* OptionalPinProperty = CastField<FStructProperty>(ShowPinsProperty->Inner))
+            {
+                FNameProperty* PropertyNameProperty = CastField<FNameProperty>(
+                    OptionalPinProperty->Struct->FindPropertyByName(TEXT("PropertyName")));
+                FBoolProperty* ShowPinProperty = CastField<FBoolProperty>(
+                    OptionalPinProperty->Struct->FindPropertyByName(TEXT("bShowPin")));
+                FScriptArrayHelper ShowPins(ShowPinsProperty,
+                    ShowPinsProperty->ContainerPtrToValuePtr<void>(AnimNode));
+
+                for (int32 PinIndex = 0; PinIndex < ShowPins.Num(); ++PinIndex)
+                {
+                    void* OptionalPin = ShowPins.GetRawPtr(PinIndex);
+                    if (PropertyNameProperty && ShowPinProperty
+                        && PropertyNameProperty->GetPropertyValue_InContainer(OptionalPin) == FName(*PropName))
+                    {
+                        ShowPinProperty->SetPropertyValue_InContainer(OptionalPin, true);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (UEdGraphPin* BoundPin = AnimNode->FindPin(FName(*PropName)))
+        {
+            BoundPin->BreakAllPinLinks();
+        }
+
         const FName Key = FName(*PropName);
         FAnimGraphNodePropertyBinding* Existing = reinterpret_cast<FAnimGraphNodePropertyBinding*>(MapHelper.FindValueFromHash(&Key));
         if (Existing)
@@ -3841,6 +3873,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetAnimGraphNodePrope
         // [LEOCC] AnimGraphNode 上的 Binding 子对象写完 PropertyBindings TMap 后必须 PostEditChange，
         // 否则 AnimGraphNode 重编译会忽略此次 binding 变化
         FUnrealMCPCommonUtils::NotifyPropertyChanged(BindObjLocal, nullptr);
+        AnimNode->ReconstructNode();
 
         TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
         Entry->SetStringField(TEXT("mode"), TEXT("binding_set"));
