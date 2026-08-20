@@ -652,6 +652,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     {
         return HandleConnectAnimGraphNodes(Params);
     }
+    else if (CommandType == TEXT("set_graph_node_pin_default_value"))
+    {
+        return HandleSetGraphNodePinDefaultValue(Params);
+    }
     else if (CommandType == TEXT("set_anim_graph_node_property"))
     {
         return HandleSetAnimGraphNodeProperty(Params);
@@ -3610,6 +3614,97 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleConnectAnimGraphNodes
     Result->SetStringField(TEXT("target_node_id"), TargetGuid);
     Result->SetStringField(TEXT("source_pin"), SourcePin);
     Result->SetStringField(TEXT("target_pin"), TargetPin);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetGraphNodePinDefaultValue(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath, NodeGuid, PinName, RequestedValue;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    if (!Params->TryGetStringField(TEXT("node_guid"), NodeGuid))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_guid' parameter"));
+    if (!Params->TryGetStringField(TEXT("pin_name"), PinName))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pin_name' parameter"));
+    if (!Params->TryGetStringField(TEXT("value"), RequestedValue))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
+    if (!Blueprint)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintPath));
+
+    UEdGraphNode* Node = nullptr;
+    UEdGraph* Graph = nullptr;
+    if (!FindNodeByGuid(Blueprint, NodeGuid, Node, Graph) || !Node || !Graph)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Node not found by GUID: %s"), *NodeGuid));
+
+    UEdGraphPin* Pin = nullptr;
+    for (UEdGraphPin* Candidate : Node->Pins)
+    {
+        if (Candidate && Candidate->Direction == EGPD_Input &&
+            Candidate->PinName.ToString().Equals(PinName, ESearchCase::IgnoreCase))
+        {
+            Pin = Candidate;
+            break;
+        }
+    }
+    if (!Pin)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Input pin not found: %s on node %s"), *PinName, *Node->GetClass()->GetName()));
+    if (Pin->bOrphanedPin)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Pin is orphaned and cannot be edited: %s"), *Pin->PinName.ToString()));
+    if (Pin->bDefaultValueIsReadOnly)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Pin default value is read-only: %s"), *Pin->PinName.ToString()));
+    if (!Pin->LinkedTo.IsEmpty())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Pin is connected; disconnect it before setting a default value: %s"), *Pin->PinName.ToString()));
+
+    const UEdGraphSchema_K2* K2Schema = Cast<const UEdGraphSchema_K2>(Pin->GetSchema());
+    if (!K2Schema)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Graph schema is not K2-compatible: %s"), *GetNameSafe(Pin->GetSchema())));
+
+    FString CanonicalValue;
+    TObjectPtr<UObject> CanonicalObject = nullptr;
+    FText CanonicalText;
+    K2Schema->GetPinDefaultValuesFromString(
+        Pin->PinType,
+        Node,
+        RequestedValue,
+        CanonicalValue,
+        CanonicalObject,
+        CanonicalText,
+        /*bPreserveTextIdentity=*/false);
+    const FString ValidationError = K2Schema->IsPinDefaultValid(
+        Pin, CanonicalValue, CanonicalObject, CanonicalText);
+    if (!ValidationError.IsEmpty())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid default value '%s' for pin %s: %s"),
+                *RequestedValue, *Pin->PinName.ToString(), *ValidationError));
+
+    const FString PreviousDefaultValue = Pin->DefaultValue;
+    Node->Modify();
+    Graph->Modify();
+    Blueprint->Modify();
+    K2Schema->TrySetDefaultValue(*Pin, RequestedValue, /*bMarkAsModified=*/false);
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("blueprint_path"), Blueprint->GetPathName());
+    Result->SetStringField(TEXT("graph_name"), Graph->GetName());
+    Result->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+    Result->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+    Result->SetStringField(TEXT("pin_name"), Pin->PinName.ToString());
+    Result->SetStringField(TEXT("requested_value"), RequestedValue);
+    Result->SetStringField(TEXT("previous_default_value"), PreviousDefaultValue);
+    Result->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+    Result->SetStringField(TEXT("default_object"), GetPathNameSafe(Pin->DefaultObject));
+    Result->SetStringField(TEXT("default_text_value"), Pin->DefaultTextValue.ToString());
     return Result;
 }
 

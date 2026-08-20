@@ -47,6 +47,7 @@ private:
     TSharedPtr<FJsonObject> HandleCreateBlueprintFromParentBlueprint(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddAnimGraphNode(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleConnectAnimGraphNodes(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetGraphNodePinDefaultValue(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetAnimGraphNodeProperty(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddBlueprintFunctionGraph(const TSharedPtr<FJsonObject>& Params);
 

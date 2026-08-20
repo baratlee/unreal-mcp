@@ -847,6 +847,52 @@ def register_blueprint_tools(mcp: FastMCP):
             return {"success": False, "message": err}
 
     @mcp.tool()
+    def set_graph_node_pin_default_value(
+        ctx: Context,
+        blueprint_path: str,
+        node_guid: str,
+        pin_name: str,
+        value: Union[str, int, float, bool],
+    ) -> Dict[str, Any]:
+        """Set the default value of an unconnected input pin on a K2/AnimGraph node.
+
+        The node is resolved by GUID across every graph owned by the Blueprint. The Unreal
+        graph schema parses and validates ``value`` using the same path as the editor UI.
+        Connected, output, orphaned, or read-only pins are rejected.
+
+        Args:
+            blueprint_path: Blueprint or AnimBlueprint asset path.
+            node_guid: Node GUID returned by ``get_blueprint_function_graph``.
+            pin_name: Internal input pin name, e.g. ``B`` on a Divide node.
+            value: Editor-formatted value. Natural bool/int/float values are accepted.
+
+        Returns:
+            success, blueprint_path, graph_name, node_guid, node_class, pin_name,
+            requested_value, previous_default_value, and canonical default fields.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            pin_value = str(value).lower() if isinstance(value, bool) else str(value)
+            response = unreal.send_command("set_graph_node_pin_default_value", {
+                "blueprint_path": blueprint_path,
+                "node_guid": node_guid,
+                "pin_name": pin_name,
+                "value": pin_value,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            err = f"Error setting graph node pin default value: {e}"
+            logger.error(err)
+            return {"success": False, "message": err}
+
+    @mcp.tool()
     def set_anim_graph_node_property(
         ctx: Context,
         blueprint_path: str,

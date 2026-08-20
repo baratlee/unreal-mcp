@@ -39,6 +39,7 @@
 | `add_blueprint_function_graph` | 给蓝图新增独立 Function Graph（自动生成 Entry + Result 节点） |
 | `add_anim_graph_node` | 在 AnimGraph（或子图）中添加 UAnimGraphNode_* 节点（如 `AnimGraphNode_RetargetPoseFromMesh`） |
 | `connect_anim_graph_nodes` | 跨所有图按 GUID 找节点 + 按 pin 名连接（要求源/目标在同一图） |
+| `set_graph_node_pin_default_value` | 跨所有图按 GUID 设置未连接 K2/AnimGraph 输入 Pin 的默认值；由 Graph Schema 解析和校验 |
 | `set_anim_graph_node_property` | AnimGraph 节点 setter：field_path/value、property_binding (TMap 写入)、clear_binding 三模式可组合 |
 
 ## Blueprint Node Tools (8)

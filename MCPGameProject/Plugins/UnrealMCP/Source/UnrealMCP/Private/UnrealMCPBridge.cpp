@@ -73,35 +73,19 @@
 
 static int32 GetMCPPortFromSettings()
 {
-    const FString SettingsNames[] = { TEXT("settings.local.json"), TEXT("settings.json") };
-    for (const FString& FileName : SettingsNames)
-    {
-        FString FilePath = FPaths::ProjectDir() / TEXT(".claude") / FileName;
-        FString FileContent;
-        if (FFileHelper::LoadFileToString(FileContent, *FilePath))
-        {
-            TSharedPtr<FJsonObject> JsonObj;
-            TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FileContent);
-            if (FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid())
-            {
-                const TSharedPtr<FJsonObject>* EnvObj = nullptr;
-                if (JsonObj->TryGetObjectField(TEXT("env"), EnvObj) && EnvObj && (*EnvObj).IsValid())
-                {
-                    FString PortStr;
-                    if ((*EnvObj)->TryGetStringField(TEXT("UNREAL_MCP_PORT"), PortStr))
-                    {
-                        int32 PortVal = FCString::Atoi(*PortStr);
-                        if (PortVal > 0 && PortVal <= 65535)
-                        {
-                            UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Using port %d from %s"), PortVal, *FilePath);
-                            return PortVal;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return MCP_SERVER_PORT;
+	int32 ConfiguredPort = 0;
+	if (GConfig && GConfig->GetInt(TEXT("UnrealMCP"), TEXT("Port"), ConfiguredPort, GEditorIni))
+	{
+		if (ConfiguredPort > 0 && ConfiguredPort <= 65535)
+		{
+			UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Using port %d from %s"), ConfiguredPort, *GEditorIni);
+			return ConfiguredPort;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("UnrealMCPBridge: Ignoring invalid configured port %d"), ConfiguredPort);
+	}
+
+	return MCP_SERVER_PORT;
 }
 
 UUnrealMCPBridge::UUnrealMCPBridge()
@@ -349,6 +333,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("create_blueprint_from_parent_blueprint") ||
                      CommandType == TEXT("add_anim_graph_node") ||
                      CommandType == TEXT("connect_anim_graph_nodes") ||
+                     CommandType == TEXT("set_graph_node_pin_default_value") ||
                      CommandType == TEXT("set_anim_graph_node_property") ||
                      CommandType == TEXT("add_blueprint_function_graph"))
             {
