@@ -595,6 +595,125 @@ def register_animation_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_anim_parent_asset_overrides(
+        ctx: Context,
+        blueprint_path: str,
+    ) -> Dict[str, Any]:
+        """List every overridable parent animation node on a child AnimBlueprint.
+
+        The result distinguishes the animation referenced by the parent graph,
+        an inherited override, a local override stored on this child, and the
+        effective asset. Use the returned parent_node_guid with the set/remove
+        tools.
+
+        Args:
+            blueprint_path: Child AnimBlueprint asset path.
+
+        Returns:
+            blueprint_path, local_override_count, overridable_node_count, and
+            overrides[]. Each entry includes node identity, graph name,
+            parent_asset, inherited_override_asset, local_override_asset,
+            effective_asset, and has_local_override.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "get_anim_parent_asset_overrides",
+                {"blueprint_path": blueprint_path},
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error getting AnimBlueprint parent asset overrides: {e}"}
+
+    @mcp.tool()
+    def set_anim_parent_asset_override(
+        ctx: Context,
+        blueprint_path: str,
+        parent_node_guid: str,
+        animation_asset_path: str,
+    ) -> Dict[str, Any]:
+        """Add or update one Parent Asset Override on a child AnimBlueprint.
+
+        The Unreal side validates that the GUID identifies an overridable
+        animation node, that the asset class is supported by the node, and that
+        the animation skeleton is compatible with the AnimBlueprint. The asset
+        is marked dirty but not saved; call save_dirty_assets afterward.
+
+        Args:
+            blueprint_path: Child AnimBlueprint asset path.
+            parent_node_guid: Parent animation-node GUID from
+                get_anim_parent_asset_overrides.
+            animation_asset_path: Animation asset package or object path.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "set_anim_parent_asset_override",
+                {
+                    "blueprint_path": blueprint_path,
+                    "parent_node_guid": parent_node_guid,
+                    "animation_asset_path": animation_asset_path,
+                },
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error setting AnimBlueprint parent asset override: {e}"}
+
+    @mcp.tool()
+    def remove_anim_parent_asset_override(
+        ctx: Context,
+        blueprint_path: str,
+        parent_node_guid: str,
+    ) -> Dict[str, Any]:
+        """Remove one local Parent Asset Override from a child AnimBlueprint.
+
+        The node falls back to the nearest inherited override or to the parent
+        graph asset. Removing a missing local override is a successful no-op.
+        The asset is marked dirty when changed but not saved.
+
+        Args:
+            blueprint_path: Child AnimBlueprint asset path.
+            parent_node_guid: Parent animation-node GUID from
+                get_anim_parent_asset_overrides.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command(
+                "remove_anim_parent_asset_override",
+                {
+                    "blueprint_path": blueprint_path,
+                    "parent_node_guid": parent_node_guid,
+                },
+            )
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            return {"success": False, "message": f"Error removing AnimBlueprint parent asset override: {e}"}
+
+    @mcp.tool()
     def get_skeleton_bone_hierarchy(ctx: Context, skeleton_path: str) -> Dict[str, Any]:
         """Get the raw bone hierarchy of a USkeleton asset.
 

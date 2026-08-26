@@ -24,6 +24,9 @@ private:
     TSharedPtr<FJsonObject> HandleGetMontageCompositeInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFindAnimationsForSkeleton(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimBlueprintInfo(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetAnimParentAssetOverrides(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetAnimParentAssetOverride(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRemoveAnimParentAssetOverride(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleListAnimationBlueprintsForSkeleton(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSkeletonBoneHierarchy(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSkeletonReferencePose(const TSharedPtr<FJsonObject>& Params);

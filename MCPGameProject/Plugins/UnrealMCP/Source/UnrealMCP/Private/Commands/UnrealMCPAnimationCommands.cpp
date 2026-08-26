@@ -12,6 +12,7 @@
 #include "Animation/Skeleton.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Animation/EditorParentPlayerListObj.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimNode_LinkedAnimLayer.h"
 #include "Animation/AnimNode_StateMachine.h"
@@ -190,6 +191,18 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_anim_blueprint_info"))
     {
         return HandleGetAnimBlueprintInfo(Params);
+    }
+    if (CommandType == TEXT("get_anim_parent_asset_overrides"))
+    {
+        return HandleGetAnimParentAssetOverrides(Params);
+    }
+    if (CommandType == TEXT("set_anim_parent_asset_override"))
+    {
+        return HandleSetAnimParentAssetOverride(Params);
+    }
+    if (CommandType == TEXT("remove_anim_parent_asset_override"))
+    {
+        return HandleRemoveAnimParentAssetOverride(Params);
     }
     if (CommandType == TEXT("list_animation_blueprints_for_skeleton"))
     {
@@ -1079,6 +1092,83 @@ namespace
             default:                                                           return TEXT("Unknown");
         }
     }
+
+    UAnimationAsset* LoadAnimationAssetByPath(const FString& AssetPath)
+    {
+        if (UAnimationAsset* Asset = LoadObject<UAnimationAsset>(nullptr, *AssetPath))
+        {
+            return Asset;
+        }
+
+        const FString AssetName = FPaths::GetBaseFilename(AssetPath);
+        if (!AssetName.IsEmpty() && !AssetPath.EndsWith(FString(TEXT(".")) + AssetName))
+        {
+            return LoadObject<UAnimationAsset>(nullptr, *(AssetPath + TEXT(".") + AssetName));
+        }
+        return nullptr;
+    }
+
+    TSharedPtr<FJsonObject> MakeAnimParentAssetOverrideJson(
+        UAnimBlueprint* AnimBP,
+        UEditorParentPlayerListObj* OverrideList,
+        const FAnimParentNodeAssetOverride& Candidate)
+    {
+        TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+        Out->SetStringField(TEXT("parent_node_guid"), Candidate.ParentNodeGuid.ToString(EGuidFormats::Digits));
+
+        UAnimGraphNode_Base* GraphNode = OverrideList->GetVisualNodeFromGuid(Candidate.ParentNodeGuid);
+        if (GraphNode)
+        {
+            Out->SetStringField(TEXT("node_name"), GraphNode->GetName());
+            Out->SetStringField(TEXT("node_title"), GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+            Out->SetStringField(TEXT("node_class"), GraphNode->GetClass()->GetName());
+            Out->SetStringField(TEXT("graph_name"), GraphNode->GetGraph() ? GraphNode->GetGraph()->GetName() : FString());
+            if (TSharedPtr<FJsonObject> ParentAsset = MakeAssetRefJson(GraphNode->GetAnimationAsset()))
+            {
+                Out->SetObjectField(TEXT("parent_asset"), ParentAsset);
+            }
+            else
+            {
+                Out->SetField(TEXT("parent_asset"), MakeShared<FJsonValueNull>());
+            }
+        }
+
+        const FAnimParentNodeAssetOverride* LocalOverride = AnimBP->ParentAssetOverrides.FindByPredicate(
+            [&Candidate](const FAnimParentNodeAssetOverride& Other)
+            {
+                return Other.ParentNodeGuid == Candidate.ParentNodeGuid;
+            });
+        Out->SetBoolField(TEXT("has_local_override"), LocalOverride != nullptr);
+        if (LocalOverride && LocalOverride->NewAsset)
+        {
+            Out->SetObjectField(TEXT("local_override_asset"), MakeAssetRefJson(LocalOverride->NewAsset));
+        }
+        else
+        {
+            Out->SetField(TEXT("local_override_asset"), MakeShared<FJsonValueNull>());
+        }
+
+        const FAnimParentNodeAssetOverride* InheritedOverride =
+            AnimBP->GetAssetOverrideForNode(Candidate.ParentNodeGuid, true);
+        if (InheritedOverride && InheritedOverride->NewAsset)
+        {
+            Out->SetObjectField(TEXT("inherited_override_asset"), MakeAssetRefJson(InheritedOverride->NewAsset));
+        }
+        else
+        {
+            Out->SetField(TEXT("inherited_override_asset"), MakeShared<FJsonValueNull>());
+        }
+
+        if (Candidate.NewAsset)
+        {
+            Out->SetObjectField(TEXT("effective_asset"), MakeAssetRefJson(Candidate.NewAsset));
+        }
+        else
+        {
+            Out->SetField(TEXT("effective_asset"), MakeShared<FJsonValueNull>());
+        }
+        return Out;
+    }
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimBlueprintInfo(const TSharedPtr<FJsonObject>& Params)
@@ -1278,6 +1368,249 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimBlueprintInfo(
     Result->SetArrayField(TEXT("state_machines"), StateMachinesArray);
     Result->SetArrayField(TEXT("used_animation_assets"), UsedAssetsArray);
 
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimParentAssetOverrides(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+    }
+
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath));
+    if (!AnimBP)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
+    }
+    if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint has no parent AnimBlueprint: %s"), *BlueprintPath));
+    }
+
+    UEditorParentPlayerListObj* OverrideList = NewObject<UEditorParentPlayerListObj>(GetTransientPackage());
+    OverrideList->InitialiseFromBlueprint(AnimBP);
+
+    TArray<TSharedPtr<FJsonValue>> OverridesJson;
+    OverridesJson.Reserve(OverrideList->Overrides.Num());
+    for (const FAnimParentNodeAssetOverride& Candidate : OverrideList->Overrides)
+    {
+        OverridesJson.Add(MakeShared<FJsonValueObject>(
+            MakeAnimParentAssetOverrideJson(AnimBP, OverrideList, Candidate)));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("blueprint_path"), AnimBP->GetPathName());
+    Result->SetNumberField(TEXT("local_override_count"), AnimBP->ParentAssetOverrides.Num());
+    Result->SetNumberField(TEXT("overridable_node_count"), OverrideList->Overrides.Num());
+    Result->SetArrayField(TEXT("overrides"), OverridesJson);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimParentAssetOverride(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    FString ParentNodeGuidText;
+    FString AnimationAssetPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) ||
+        !Params->TryGetStringField(TEXT("parent_node_guid"), ParentNodeGuidText) ||
+        !Params->TryGetStringField(TEXT("animation_asset_path"), AnimationAssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Missing required parameters: blueprint_path, parent_node_guid, animation_asset_path"));
+    }
+
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath));
+    if (!AnimBP)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
+    }
+    if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint has no parent AnimBlueprint: %s"), *BlueprintPath));
+    }
+
+    FGuid ParentNodeGuid;
+    if (!FGuid::Parse(ParentNodeGuidText, ParentNodeGuid))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid parent_node_guid: %s"), *ParentNodeGuidText));
+    }
+
+    UAnimationAsset* AnimationAsset = LoadAnimationAssetByPath(AnimationAssetPath);
+    if (!AnimationAsset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset not found: %s"), *AnimationAssetPath));
+    }
+    if (AnimBP->TargetSkeleton && !AnimBP->TargetSkeleton->IsCompatibleForEditor(FAssetData(AnimationAsset)))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset skeleton is incompatible with AnimBlueprint: %s"),
+                *AnimationAsset->GetPathName()));
+    }
+
+    UEditorParentPlayerListObj* OverrideList = NewObject<UEditorParentPlayerListObj>(GetTransientPackage());
+    OverrideList->InitialiseFromBlueprint(AnimBP);
+    FAnimParentNodeAssetOverride* Candidate = OverrideList->Overrides.FindByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    UAnimGraphNode_Base* GraphNode = OverrideList->GetVisualNodeFromGuid(ParentNodeGuid);
+    if (!Candidate || !GraphNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Parent node is not an overridable animation node: %s"), *ParentNodeGuidText));
+    }
+
+    const TSubclassOf<UAnimationAsset> SupportedAssetClass = GraphNode->GetAnimationAssetClass();
+    if (SupportedAssetClass && !AnimationAsset->IsA(SupportedAssetClass))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Animation asset class %s is not supported by node class %s"),
+                *AnimationAsset->GetClass()->GetName(), *GraphNode->GetClass()->GetName()));
+    }
+
+    const bool bHadLocalOverride = AnimBP->ParentAssetOverrides.ContainsByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    const FAnimParentNodeAssetOverride* InheritedOverride =
+        AnimBP->GetAssetOverrideForNode(ParentNodeGuid, true);
+    UAnimationAsset* FallbackAsset =
+        InheritedOverride ? InheritedOverride->NewAsset.Get() : GraphNode->GetAnimationAsset();
+    if (bHadLocalOverride || AnimationAsset != FallbackAsset)
+    {
+        Candidate->NewAsset = AnimationAsset;
+        OverrideList->ApplyOverrideToBlueprint(*Candidate);
+    }
+    OverrideList->InitialiseFromBlueprint(AnimBP);
+
+    const FAnimParentNodeAssetOverride* UpdatedCandidate = OverrideList->Overrides.FindByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    if (!UpdatedCandidate)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Override node disappeared after update"));
+    }
+
+    const bool bHasLocalOverride = AnimBP->ParentAssetOverrides.ContainsByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    FString Action = TEXT("unchanged");
+    if (bHadLocalOverride && bHasLocalOverride)
+    {
+        Action = TEXT("updated");
+    }
+    else if (bHadLocalOverride)
+    {
+        Action = TEXT("removed_as_default");
+    }
+    else if (bHasLocalOverride)
+    {
+        Action = TEXT("added");
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeAnimParentAssetOverrideJson(AnimBP, OverrideList, *UpdatedCandidate);
+    Result->SetStringField(TEXT("blueprint_path"), AnimBP->GetPathName());
+    Result->SetStringField(TEXT("action"), Action);
+    Result->SetNumberField(TEXT("local_override_count"), AnimBP->ParentAssetOverrides.Num());
+    Result->SetBoolField(TEXT("saved"), false);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveAnimParentAssetOverride(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    FString ParentNodeGuidText;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) ||
+        !Params->TryGetStringField(TEXT("parent_node_guid"), ParentNodeGuidText))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Missing required parameters: blueprint_path, parent_node_guid"));
+    }
+
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath));
+    if (!AnimBP)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
+    }
+    if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint has no parent AnimBlueprint: %s"), *BlueprintPath));
+    }
+
+    FGuid ParentNodeGuid;
+    if (!FGuid::Parse(ParentNodeGuidText, ParentNodeGuid))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid parent_node_guid: %s"), *ParentNodeGuidText));
+    }
+
+    const bool bHasLocalOverride = AnimBP->ParentAssetOverrides.ContainsByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    if (!bHasLocalOverride)
+    {
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetStringField(TEXT("blueprint_path"), AnimBP->GetPathName());
+        Result->SetStringField(TEXT("parent_node_guid"), ParentNodeGuid.ToString(EGuidFormats::Digits));
+        Result->SetBoolField(TEXT("removed"), false);
+        Result->SetNumberField(TEXT("local_override_count"), AnimBP->ParentAssetOverrides.Num());
+        Result->SetBoolField(TEXT("saved"), false);
+        return Result;
+    }
+
+    UEditorParentPlayerListObj* OverrideList = NewObject<UEditorParentPlayerListObj>(GetTransientPackage());
+    OverrideList->InitialiseFromBlueprint(AnimBP);
+    FAnimParentNodeAssetOverride* Candidate = OverrideList->Overrides.FindByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    UAnimGraphNode_Base* GraphNode = OverrideList->GetVisualNodeFromGuid(ParentNodeGuid);
+    if (!Candidate || !GraphNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Parent node is not an overridable animation node: %s"), *ParentNodeGuidText));
+    }
+
+    const FAnimParentNodeAssetOverride* InheritedOverride =
+        AnimBP->GetAssetOverrideForNode(ParentNodeGuid, true);
+    Candidate->NewAsset = InheritedOverride ? InheritedOverride->NewAsset.Get() : GraphNode->GetAnimationAsset();
+    OverrideList->ApplyOverrideToBlueprint(*Candidate);
+    OverrideList->InitialiseFromBlueprint(AnimBP);
+
+    const FAnimParentNodeAssetOverride* UpdatedCandidate = OverrideList->Overrides.FindByPredicate(
+        [&ParentNodeGuid](const FAnimParentNodeAssetOverride& Other)
+        {
+            return Other.ParentNodeGuid == ParentNodeGuid;
+        });
+    if (!UpdatedCandidate)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Override node disappeared after removal"));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeAnimParentAssetOverrideJson(AnimBP, OverrideList, *UpdatedCandidate);
+    Result->SetStringField(TEXT("blueprint_path"), AnimBP->GetPathName());
+    Result->SetBoolField(TEXT("removed"), true);
+    Result->SetNumberField(TEXT("local_override_count"), AnimBP->ParentAssetOverrides.Num());
+    Result->SetBoolField(TEXT("saved"), false);
     return Result;
 }
 

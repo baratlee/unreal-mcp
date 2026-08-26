@@ -36,7 +36,7 @@ class UnrealConnection:
         self.socket = None
         self.connected = False
     
-    def connect(self) -> bool:
+    def connect(self, initial_payload: bytes = None) -> bool:
         """Connect to the Unreal Engine instance."""
         try:
             # Close any existing socket
@@ -60,6 +60,8 @@ class UnrealConnection:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
             
             self.socket.connect((UNREAL_HOST, UNREAL_PORT))
+            if initial_payload:
+                self.socket.sendall(initial_payload)
             self.connected = True
             logger.info("Connected to Unreal Engine")
             return True
@@ -126,8 +128,16 @@ class UnrealConnection:
     
     def send_command(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """Send a command to Unreal Engine and get the response."""
-        # Always reconnect for each command, since Unreal closes the connection after each command
-        # This is different from Unity which keeps connections alive
+        command_obj = {
+            "type": command,
+            "params": params or {}
+        }
+        command_json = json.dumps(command_obj)
+        command_payload = command_json.encode('utf-8')
+
+        # Every command uses a fresh connection. The Unreal bridge performs its first
+        # non-blocking receive immediately after accept, so the payload is sent from
+        # connect() without an idle connection or a separate health-check round trip.
         if self.socket:
             try:
                 self.socket.close()
@@ -136,22 +146,13 @@ class UnrealConnection:
             self.socket = None
             self.connected = False
         
-        if not self.connect():
+        if not self.connect(command_payload):
             logger.error("Failed to connect to Unreal Engine for command")
             return None
         
         try:
-            # Match Unity's command format exactly
-            command_obj = {
-                "type": command,  # Use "type" instead of "command"
-                "params": params or {}  # Use Unity's params or {} pattern
-            }
-            
-            # Send without newline, exactly like Unity
-            command_json = json.dumps(command_obj)
             logger.info(f"Sending command: {command_json}")
-            self.socket.sendall(command_json.encode('utf-8'))
-            
+
             # Read response using improved handler
             response_data = self.receive_full_response(self.socket)
             response = json.loads(response_data.decode('utf-8'))
@@ -210,27 +211,6 @@ def get_unreal_connection() -> Optional[UnrealConnection]:
     try:
         if _unreal_connection is None:
             _unreal_connection = UnrealConnection()
-            if not _unreal_connection.connect():
-                logger.warning("Could not connect to Unreal Engine")
-                _unreal_connection = None
-        else:
-            # Verify connection is still valid with a ping-like test
-            try:
-                # Simple test by sending an empty buffer to check if socket is still connected
-                _unreal_connection.socket.sendall(b'\x00')
-                logger.debug("Connection verified with ping test")
-            except Exception as e:
-                logger.warning(f"Existing connection failed: {e}")
-                _unreal_connection.disconnect()
-                _unreal_connection = None
-                # Try to reconnect
-                _unreal_connection = UnrealConnection()
-                if not _unreal_connection.connect():
-                    logger.warning("Could not reconnect to Unreal Engine")
-                    _unreal_connection = None
-                else:
-                    logger.info("Successfully reconnected to Unreal Engine")
-        
         return _unreal_connection
     except Exception as e:
         logger.error(f"Error getting Unreal connection: {e}")
@@ -397,4 +377,4 @@ def info():
 # Run the server
 if __name__ == "__main__":
     logger.info("Starting MCP server with stdio transport")
-    mcp.run(transport='stdio') 
+    mcp.run(transport='stdio')

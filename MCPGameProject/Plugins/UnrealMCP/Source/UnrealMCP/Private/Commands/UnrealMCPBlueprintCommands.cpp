@@ -31,6 +31,7 @@
 #include "AnimationStateMachineSchema.h"
 #include "AnimGraphNode_StateMachine.h"
 #include "AnimStateNode.h"
+#include "AnimStateAliasNode.h"
 #include "AnimStateTransitionNode.h"
 #include "AnimStateConduitNode.h"
 #include "AnimStateEntryNode.h"
@@ -2396,6 +2397,42 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetAnimStateMachine(c
     ResultObj->SetNumberField(TEXT("state_count"), StatesArray.Num());
     ResultObj->SetArrayField(TEXT("states"), StatesArray);
 
+    // Collect State Aliases separately so the existing state_count/states contract remains stable.
+    TArray<UAnimStateAliasNode*> StateAliasNodes;
+    SMGraph->GetNodesOfClass(StateAliasNodes);
+
+    TArray<TSharedPtr<FJsonValue>> StateAliasesArray;
+    for (UAnimStateAliasNode* StateAliasNode : StateAliasNodes)
+    {
+        if (!StateAliasNode) continue;
+
+        TArray<FString> AliasedStateNames;
+        for (const TWeakObjectPtr<UAnimStateNodeBase>& AliasedState : StateAliasNode->GetAliasedStates())
+        {
+            if (const UAnimStateNodeBase* AliasedStateNode = AliasedState.Get())
+            {
+                AliasedStateNames.Add(AliasedStateNode->GetStateName());
+            }
+        }
+        AliasedStateNames.Sort();
+
+        TArray<TSharedPtr<FJsonValue>> AliasedStatesArray;
+        AliasedStatesArray.Reserve(AliasedStateNames.Num());
+        for (const FString& AliasedStateName : AliasedStateNames)
+        {
+            AliasedStatesArray.Add(MakeShared<FJsonValueString>(AliasedStateName));
+        }
+
+        TSharedPtr<FJsonObject> StateAliasObj = MakeShared<FJsonObject>();
+        StateAliasObj->SetStringField(TEXT("name"), StateAliasNode->GetStateName());
+        StateAliasObj->SetBoolField(TEXT("global_alias"), StateAliasNode->bGlobalAlias);
+        StateAliasObj->SetNumberField(TEXT("aliased_state_count"), AliasedStatesArray.Num());
+        StateAliasObj->SetArrayField(TEXT("aliased_states"), AliasedStatesArray);
+        StateAliasesArray.Add(MakeShared<FJsonValueObject>(StateAliasObj));
+    }
+    ResultObj->SetNumberField(TEXT("state_alias_count"), StateAliasesArray.Num());
+    ResultObj->SetArrayField(TEXT("state_aliases"), StateAliasesArray);
+
     // Collect transitions
     TArray<UAnimStateTransitionNode*> TransitionNodes;
     SMGraph->GetNodesOfClass(TransitionNodes);
@@ -2826,6 +2863,36 @@ namespace
         return nullptr;
     }
 
+    UAnimStateNodeBase* FindAnimStateEndpoint(UAnimationStateMachineGraph* Graph, const FString& StateName)
+    {
+        if (UAnimStateNode* State = FindAnimState(Graph, StateName))
+        {
+            return State;
+        }
+        if (!Graph) return nullptr;
+
+        TArray<UAnimStateConduitNode*> Conduits;
+        Graph->GetNodesOfClass(Conduits);
+        for (UAnimStateConduitNode* Conduit : Conduits)
+        {
+            if (Conduit && Conduit->GetStateName().Equals(StateName, ESearchCase::IgnoreCase))
+            {
+                return Conduit;
+            }
+        }
+
+        TArray<UAnimStateAliasNode*> StateAliases;
+        Graph->GetNodesOfClass(StateAliases);
+        for (UAnimStateAliasNode* StateAlias : StateAliases)
+        {
+            if (StateAlias && StateAlias->GetStateName().Equals(StateName, ESearchCase::IgnoreCase))
+            {
+                return StateAlias;
+            }
+        }
+        return nullptr;
+    }
+
     UAnimStateTransitionNode* FindAnimTransition(UAnimationStateMachineGraph* Graph, const FString& Source, const FString& Target)
     {
         if (!Graph) return nullptr;
@@ -2892,8 +2959,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddAnimTransition(con
 
     UBlueprint* Blueprint = ResolveAnimBlueprint(BlueprintPath);
     UAnimationStateMachineGraph* Graph = FindStateMachineGraph(Blueprint, MachineName);
-    UAnimStateNode* SourceState = FindAnimState(Graph, Source);
-    UAnimStateNode* TargetState = FindAnimState(Graph, Target);
+    UAnimStateNodeBase* SourceState = FindAnimStateEndpoint(Graph, Source);
+    UAnimStateNodeBase* TargetState = FindAnimStateEndpoint(Graph, Target);
     if (!Blueprint || !Graph || !SourceState || !TargetState) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint, State Machine, source state, or target state not found"));
     if (FindAnimTransition(Graph, Source, Target)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Transition already exists"));
     Blueprint->Modify();

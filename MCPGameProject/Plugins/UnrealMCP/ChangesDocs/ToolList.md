@@ -1,6 +1,6 @@
 # UnrealMCP Tool List
 
-> 118 tools total, organized by category.
+> 121 tools total, organized by category.
 
 ---
 
@@ -72,7 +72,7 @@
 |---|---|
 | `create_input_mapping` | 创建项目输入映射 |
 
-## Animation Tools (19)
+## Animation Tools (22)
 
 | Tool | Description |
 |---|---|
@@ -86,6 +86,9 @@
 | `find_animations_for_skeleton` | 通过 Asset Registry 按 Skeleton 反查所有关联的 AnimSequence/AnimMontage |
 | `list_animation_blueprints_for_skeleton` | 通过 Asset Registry 按 Skeleton 反查所有关联的 AnimBlueprint |
 | `get_anim_blueprint_info` | 读取 UAnimBlueprint 资产级属性：TargetSkeleton / 预览 Mesh / 预览 AnimBP / 继承链 / 顶层状态机 / 直接引用动画 |
+| `get_anim_parent_asset_overrides` | 列出子 AnimBP 的所有可覆盖父动画节点，并区分父资源、继承 Override、本地 Override 与最终生效资源 |
+| `set_anim_parent_asset_override` | 按父节点 GUID 新增或更新 Parent Asset Override；校验节点、资产类型与 Skeleton，标脏但不保存 |
+| `remove_anim_parent_asset_override` | 删除指定父节点 GUID 的本地 Parent Asset Override，回退到继承 Override 或父图资源 |
 | `get_skeleton_bone_hierarchy` | 获取 USkeleton 的完整骨骼层级（含虚拟骨骼） |
 | `get_skeleton_reference_pose` | 读取 USkeleton 的 Bind Pose 骨骼 Transform（支持 Local / Component 空间） |
 | `get_skeleton_retarget_modes` | 获取 USkeleton 每根骨骼的 TranslationRetargetingMode |
@@ -145,7 +148,7 @@
 
 | Tool | Description |
 |---|---|
-| `get_anim_state_machine` | 获取 AnimBP 中状态机的结构：状态列表 + 转换拓扑 + 入口状态 |
+| `get_anim_state_machine` | 获取 AnimBP 中状态机的结构：状态、Conduit、State Alias 配置、转换拓扑与入口状态 |
 | `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图；默认开启 `compact_output` 并使用 `summary` Pin payload |
 | `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等）；默认开启 `compact_output` |
 

@@ -381,6 +381,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_montage_composite_info") ||
                      CommandType == TEXT("find_animations_for_skeleton") ||
                      CommandType == TEXT("get_anim_blueprint_info") ||
+                     CommandType == TEXT("get_anim_parent_asset_overrides") ||
+                     CommandType == TEXT("set_anim_parent_asset_override") ||
+                     CommandType == TEXT("remove_anim_parent_asset_override") ||
                      CommandType == TEXT("list_animation_blueprints_for_skeleton") ||
                      CommandType == TEXT("get_skeleton_reference_pose") ||
                      CommandType == TEXT("get_skeletal_mesh_info") ||
