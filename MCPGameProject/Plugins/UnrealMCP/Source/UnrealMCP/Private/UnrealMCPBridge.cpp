@@ -88,8 +88,43 @@ static int32 GetMCPPortFromSettings()
 	return MCP_SERVER_PORT;
 }
 
+namespace
+{
+    FString MakeBridgeErrorResponse(const FString& Error)
+    {
+        TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
+        Response->SetStringField(TEXT("status"), TEXT("error"));
+        Response->SetStringField(TEXT("error"), Error);
+
+        FString Result;
+        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Result);
+        FJsonSerializer::Serialize(Response.ToSharedRef(), Writer);
+        return Result;
+    }
+
+    struct FMCPCommandCompletion
+    {
+        TPromise<FString> Promise;
+        TAtomic<bool> bCompleted{false};
+
+        void Complete(FString Response)
+        {
+            if (!bCompleted.Exchange(true))
+            {
+                Promise.SetValue(MoveTemp(Response));
+            }
+        }
+    };
+}
+
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
+    bIsRunning = false;
+    bStopping.Store(true);
+    ListenerSocket = nullptr;
+    ServerThread = nullptr;
+    ServerRunnable = nullptr;
+
     EditorCommands = MakeShared<FUnrealMCPEditorCommands>();
     BlueprintCommands = MakeShared<FUnrealMCPBlueprintCommands>();
     BlueprintNodeCommands = MakeShared<FUnrealMCPBlueprintNodeCommands>();
@@ -108,6 +143,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
 {
+    StopServer();
     EditorCommands.Reset();
     BlueprintCommands.Reset();
     BlueprintNodeCommands.Reset();
@@ -144,9 +180,10 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Initializing"));
     
     bIsRunning = false;
+    bStopping.Store(false);
     ListenerSocket = nullptr;
-    ConnectionSocket = nullptr;
     ServerThread = nullptr;
+    ServerRunnable = nullptr;
     Port = GetMCPPortFromSettings();
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
@@ -179,8 +216,8 @@ void UUnrealMCPBridge::StartServer()
     }
 
     // Create listener socket
-    TSharedPtr<FSocket> NewListenerSocket = MakeShareable(SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false));
-    if (!NewListenerSocket.IsValid())
+    FSocket* NewListenerSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false);
+    if (!NewListenerSocket)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to create listener socket"));
         return;
@@ -195,6 +232,7 @@ void UUnrealMCPBridge::StartServer()
     if (!NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to bind listener socket to %s:%d"), *ServerAddress.ToString(), Port);
+        SocketSubsystem->DestroySocket(NewListenerSocket);
         return;
     }
 
@@ -202,16 +240,17 @@ void UUnrealMCPBridge::StartServer()
     if (!NewListenerSocket->Listen(5))
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to start listening"));
+        SocketSubsystem->DestroySocket(NewListenerSocket);
         return;
     }
 
     ListenerSocket = NewListenerSocket;
-    bIsRunning = true;
-    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server started on %s:%d"), *ServerAddress.ToString(), Port);
+    bStopping.Store(false);
 
     // Start server thread
+    ServerRunnable = new FMCPServerRunnable(this, ListenerSocket);
     ServerThread = FRunnableThread::Create(
-        new FMCPServerRunnable(this, ListenerSocket),
+        ServerRunnable,
         TEXT("UnrealMCPServerThread"),
         0, TPri_Normal
     );
@@ -219,19 +258,26 @@ void UUnrealMCPBridge::StartServer()
     if (!ServerThread)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to create server thread"));
-        StopServer();
+        delete ServerRunnable;
+        ServerRunnable = nullptr;
+        SocketSubsystem->DestroySocket(ListenerSocket);
+        ListenerSocket = nullptr;
         return;
     }
+
+    bIsRunning = true;
+    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server started on %s:%d"), *ServerAddress.ToString(), Port);
 }
 
 // Stop the MCP server
 void UUnrealMCPBridge::StopServer()
 {
-    if (!bIsRunning)
+    if (!bIsRunning && !ServerThread && !ListenerSocket)
     {
         return;
     }
 
+    bStopping.Store(true);
     bIsRunning = false;
 
     // Clean up thread
@@ -242,17 +288,17 @@ void UUnrealMCPBridge::StopServer()
         ServerThread = nullptr;
     }
 
-    // Close sockets
-    if (ConnectionSocket.IsValid())
+    if (ServerRunnable)
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ConnectionSocket.Get());
-        ConnectionSocket.Reset();
+        delete ServerRunnable;
+        ServerRunnable = nullptr;
     }
 
-    if (ListenerSocket.IsValid())
+    if (ListenerSocket)
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ListenerSocket.Get());
-        ListenerSocket.Reset();
+        ListenerSocket->Close();
+        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ListenerSocket);
+        ListenerSocket = nullptr;
     }
 
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server stopped"));
@@ -263,13 +309,19 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
     
-    // Create a promise to wait for the result
-    TPromise<FString> Promise;
-    TFuture<FString> Future = Promise.GetFuture();
+    TSharedRef<FMCPCommandCompletion> Completion = MakeShared<FMCPCommandCompletion>();
+    TFuture<FString> Future = Completion->Promise.GetFuture();
+    TWeakObjectPtr<UUnrealMCPBridge> WeakThis(this);
     
     // Queue execution on Game Thread
-    AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, Promise = MoveTemp(Promise)]() mutable
+    AsyncTask(ENamedThreads::GameThread, [this, WeakThis, CommandType, Params, Completion]() mutable
     {
+        if (!WeakThis.IsValid() || WeakThis->IsStopping())
+        {
+            Completion->Complete(MakeBridgeErrorResponse(TEXT("Unreal MCP bridge is stopping")));
+            return;
+        }
+
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
         
         try
@@ -563,7 +615,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 FString ResultString;
                 TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
                 FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-                Promise.SetValue(ResultString);
+                Completion->Complete(MoveTemp(ResultString));
                 return;
             }
             
@@ -602,8 +654,17 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         FString ResultString;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
         FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-        Promise.SetValue(ResultString);
+        Completion->Complete(MoveTemp(ResultString));
     });
-    
+
+    while (!Future.WaitFor(FTimespan::FromMilliseconds(50.0)))
+    {
+        if (bStopping.Load())
+        {
+            Completion->Complete(MakeBridgeErrorResponse(TEXT("Unreal MCP bridge is stopping")));
+            break;
+        }
+    }
+
     return Future.Get();
 }

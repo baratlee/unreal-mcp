@@ -2,10 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include "Templates/Atomic.h"
 #include "Sockets.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 
 class UUnrealMCPBridge;
+class FJsonObject;
 
 /**
  * Runnable class for the MCP server thread
@@ -13,7 +15,7 @@ class UUnrealMCPBridge;
 class FMCPServerRunnable : public FRunnable
 {
 public:
-	FMCPServerRunnable(UUnrealMCPBridge* InBridge, TSharedPtr<FSocket> InListenerSocket);
+	FMCPServerRunnable(UUnrealMCPBridge* InBridge, FSocket* InListenerSocket);
 	virtual ~FMCPServerRunnable();
 
 	// FRunnable interface
@@ -22,13 +24,14 @@ public:
 	virtual void Stop() override;
 	virtual void Exit() override;
 
-protected:
-	void HandleClientConnection(TSharedPtr<FSocket> ClientSocket);
-	void ProcessMessage(TSharedPtr<FSocket> Client, const FString& Message);
-
 private:
+	bool ReceiveRequest(FString& OutCommandType, TSharedPtr<FJsonObject>& OutParams, FString& OutError, int32& OutRequestBytes);
+	bool SendResponse(const FString& Response, int32& OutResponseBytes);
+	FString ExecuteBatchRead(const TSharedPtr<FJsonObject>& Params);
+	void CloseClientSocket();
+
 	UUnrealMCPBridge* Bridge;
-	TSharedPtr<FSocket> ListenerSocket;
-	TSharedPtr<FSocket> ClientSocket;
-	bool bRunning;
-}; 
+	FSocket* ListenerSocket;
+	FSocket* ClientSocket;
+	TAtomic<bool> bRunning;
+};

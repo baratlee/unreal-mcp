@@ -5,7 +5,7 @@ This module provides tools for managing project-wide settings and configuration.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from mcp.server.fastmcp import FastMCP, Context
 
 # Get logger
@@ -91,4 +91,34 @@ def register_project_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
-    logger.info("Project tools registered successfully") 
+    @mcp.tool()
+    def batch_read(
+        ctx: Context,
+        operations: List[Dict[str, Any]],
+        stop_on_error: bool = False,
+    ) -> Dict[str, Any]:
+        """Run 1-8 independent allowlisted read commands in one Unreal round trip.
+
+        Each operation is {"id": str, "command": str, "params": object}. Writes,
+        nested batches, and unlisted commands are rejected per operation.
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        if not 1 <= len(operations) <= 8:
+            return {"success": False, "message": "operations must contain 1-8 entries"}
+
+        unreal = get_unreal_connection()
+        if not unreal:
+            return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+        response = unreal.send_command("batch_read", {
+            "operations": operations,
+            "stop_on_error": stop_on_error,
+        })
+        if not response:
+            return {"success": False, "message": "No response from Unreal Engine"}
+        if response.get("status") == "error":
+            return {"success": False, "message": response.get("error", "Unknown error")}
+        return response.get("result", response)
+
+    logger.info("Project tools registered successfully")

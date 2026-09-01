@@ -31,9 +31,6 @@ def register_editor_tools(mcp: FastMCP):
                 logger.warning("No response from Unreal Engine")
                 return []
                 
-            # Log the complete response for debugging
-            logger.info(f"Complete response from Unreal: {response}")
-            
             # Check response format
             if "result" in response and "actors" in response["result"]:
                 actors = response["result"]["actors"]
@@ -44,7 +41,7 @@ def register_editor_tools(mcp: FastMCP):
                 logger.info(f"Found {len(actors)} actors in level")
                 return actors
                 
-            logger.warning(f"Unexpected response format: {response}")
+            logger.warning("Unexpected get_actors_in_level response keys: %s", list(response.keys()))
             return []
             
         except Exception as e:

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "EditorSubsystem.h"
+#include "Templates/Atomic.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "Http.h"
@@ -50,6 +51,7 @@ public:
 	void StartServer();
 	void StopServer();
 	bool IsRunning() const { return bIsRunning; }
+	bool IsStopping() const { return bStopping.Load(); }
 
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
@@ -61,9 +63,10 @@ public:
 private:
 	// Server state
 	bool bIsRunning;
-	TSharedPtr<FSocket> ListenerSocket;
-	TSharedPtr<FSocket> ConnectionSocket;
+	TAtomic<bool> bStopping;
+	FSocket* ListenerSocket;
 	FRunnableThread* ServerThread;
+	FMCPServerRunnable* ServerRunnable;
 
 	// Server configuration
 	FIPv4Address ServerAddress;

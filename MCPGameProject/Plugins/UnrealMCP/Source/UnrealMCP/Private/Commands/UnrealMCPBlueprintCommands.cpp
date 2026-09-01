@@ -1909,6 +1909,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
+    FString OutputProfile = TEXT("full");
+    Params->TryGetStringField(TEXT("output_profile"), OutputProfile);
+    const bool bSummaryOutput = OutputProfile.Equals(TEXT("summary"), ESearchCase::IgnoreCase);
+    if (!bSummaryOutput && !OutputProfile.Equals(TEXT("full"), ESearchCase::IgnoreCase))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("'output_profile' must be 'summary' or 'full'"));
+    }
+
     // Load blueprint
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprintByPath(BlueprintPath);
     if (!Blueprint)
@@ -1922,6 +1931,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
     // --- Basic info ---
     ResultObj->SetStringField(TEXT("name"), Blueprint->GetName());
     ResultObj->SetStringField(TEXT("path"), Blueprint->GetPathName());
+    ResultObj->SetStringField(TEXT("output_profile"), bSummaryOutput ? TEXT("summary") : TEXT("full"));
 
     if (Blueprint->ParentClass)
     {
@@ -1981,31 +1991,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
                 CompObj->SetStringField(TEXT("parent"), Node->ParentComponentOrVariableName.ToString());
             }
 
-            // Gather editable properties from the component template
-            TArray<TSharedPtr<FJsonValue>> PropsArray;
-            for (TFieldIterator<FProperty> PropIt(Node->ComponentTemplate->GetClass()); PropIt; ++PropIt)
+            if (!bSummaryOutput)
             {
-                FProperty* Prop = *PropIt;
-                // Only include properties that are editable in the editor
-                if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
-
-                TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
-                PropObj->SetStringField(TEXT("name"), Prop->GetName());
-                PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
-                PropObj->SetStringField(TEXT("category"), Prop->GetMetaData(TEXT("Category")));
-
-                // Try to get the current value as string
-                FString ValueStr;
-                void* ValueAddr = Prop->ContainerPtrToValuePtr<void>(Node->ComponentTemplate);
-                Prop->ExportTextItem_Direct(ValueStr, ValueAddr, nullptr, nullptr, PPF_None);
-                if (!ValueStr.IsEmpty())
+                TArray<TSharedPtr<FJsonValue>> PropsArray;
+                for (TFieldIterator<FProperty> PropIt(Node->ComponentTemplate->GetClass()); PropIt; ++PropIt)
                 {
-                    PropObj->SetStringField(TEXT("value"), ValueStr);
-                }
+                    FProperty* Prop = *PropIt;
+                    if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
 
-                PropsArray.Add(MakeShared<FJsonValueObject>(PropObj));
+                    TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+                    PropObj->SetStringField(TEXT("name"), Prop->GetName());
+                    PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+                    PropObj->SetStringField(TEXT("category"), Prop->GetMetaData(TEXT("Category")));
+
+                    FString ValueStr;
+                    void* ValueAddr = Prop->ContainerPtrToValuePtr<void>(Node->ComponentTemplate);
+                    Prop->ExportTextItem_Direct(ValueStr, ValueAddr, nullptr, nullptr, PPF_None);
+                    if (!ValueStr.IsEmpty())
+                    {
+                        PropObj->SetStringField(TEXT("value"), ValueStr);
+                    }
+
+                    PropsArray.Add(MakeShared<FJsonValueObject>(PropObj));
+                }
+                CompObj->SetArrayField(TEXT("properties"), PropsArray);
             }
-            CompObj->SetArrayField(TEXT("properties"), PropsArray);
 
             ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
         }
@@ -2081,7 +2091,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
         }
 
         // Default value
-        if (!Var.DefaultValue.IsEmpty())
+        if (!bSummaryOutput && !Var.DefaultValue.IsEmpty())
         {
             VarObj->SetStringField(TEXT("default_value"), Var.DefaultValue);
         }
@@ -2100,13 +2110,16 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintInfo(cons
         GraphObj->SetStringField(TEXT("name"), Graph->GetName());
         GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 
-        TArray<TSharedPtr<FJsonValue>> NodesArray;
-        for (UEdGraphNode* Node : Graph->Nodes)
+        if (!bSummaryOutput)
         {
-            if (!Node) continue;
-            NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node)));
+            TArray<TSharedPtr<FJsonValue>> NodesArray;
+            for (UEdGraphNode* Node : Graph->Nodes)
+            {
+                if (!Node) continue;
+                NodesArray.Add(MakeShared<FJsonValueObject>(SerializeGraphNodeToJson(Node)));
+            }
+            GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
         }
-        GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
 
         GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
     }

@@ -420,16 +420,17 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def get_blueprint_info(
         ctx: Context,
-        blueprint_path: str
+        blueprint_path: str,
+        output_profile: str = "summary",
     ) -> Dict[str, Any]:
-        """
-        Get detailed information about a Blueprint asset, including components, variables, and event graph nodes.
+        """Get Blueprint structure with compact summary output by default.
 
         Args:
             blueprint_path: Asset path of the Blueprint (e.g., "/Game/Blueprints/MyBlueprint" or just "MyBlueprint")
+            output_profile: "summary" omits component values and graph nodes; "full" preserves legacy detail.
 
         Returns:
-            Blueprint info as JSON: name, parent class, components, variables, event graphs with nodes and connections
+            Blueprint metadata, components, variables, and graph inventory.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -440,7 +441,8 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
             response = unreal.send_command("get_blueprint_info", {
-                "blueprint_path": blueprint_path
+                "blueprint_path": blueprint_path,
+                "output_profile": output_profile,
             })
 
             if not response:
