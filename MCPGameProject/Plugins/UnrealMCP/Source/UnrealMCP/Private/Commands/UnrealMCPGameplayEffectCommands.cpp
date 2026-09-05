@@ -998,7 +998,7 @@ TSharedPtr<FJsonObject> FUnrealMCPGameplayEffectCommands::HandleGetGameplayEffec
 			{
 				Arr.Add(MakeShared<FJsonValueString>(Inner->GetClass()->GetName()));
 			}
-		}, /*bIncludeNestedObjects=*/ false);
+		}, EGetObjectsFlags::None);
 		Result->SetArrayField(TEXT("components"), Arr);
 		Result->SetNumberField(TEXT("components_count"), Arr.Num());
 	}
