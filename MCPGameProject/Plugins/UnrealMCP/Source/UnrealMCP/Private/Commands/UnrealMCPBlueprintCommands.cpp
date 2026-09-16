@@ -257,6 +257,12 @@ namespace
                     break;
                 }
             }
+
+            TArray<TSharedPtr<FJsonValue>> PropertyBindings = SerializeAnimGraphPropertyBindings(AnimNode);
+            if (PropertyBindings.Num() > 0)
+            {
+                NodeObj->SetArrayField(TEXT("property_bindings"), PropertyBindings);
+            }
             return;
         }
 

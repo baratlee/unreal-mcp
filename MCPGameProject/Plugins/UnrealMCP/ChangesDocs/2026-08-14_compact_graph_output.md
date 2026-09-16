@@ -20,7 +20,7 @@ The C++ command layer continues to accept the earlier `output_profile="compact"|
 
 Both profiles preserve node identity, class, title, semantic fields, pins, and connection topology.
 
-- `compact_output=true` omits `pos_x`, `pos_y`, empty `pins`, Property Binding details, and verbose `anim_node_properties` / `node_object_properties` dumps. It retains `anim_node_struct` so the runtime node type remains visible.
+- `compact_output=true` omits `pos_x`, `pos_y`, empty `pins`, empty Property Binding arrays, and verbose `anim_node_properties` / `node_object_properties` dumps. It retains `anim_node_struct` and non-empty `property_bindings`, so binding-backed node semantics remain visible.
 - `full` preserves the previous node response shape, including editor-layout coordinates and empty containers.
 - Every graph response reports the effective `compact_output`, `output_profile`, and `pin_payload_mode`.
 - `topology_only=true` reports `output_profile="topology"`, forces the effective Pin payload to `names_only`, omits node Pin arrays, and returns each connection once as `[source_node_index, source_pin_name, target_node_index, target_pin_name]`. Node indices address the response's `nodes` array.

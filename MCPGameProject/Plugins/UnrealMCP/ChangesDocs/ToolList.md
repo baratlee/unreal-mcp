@@ -150,7 +150,7 @@
 |---|---|
 | `get_anim_state_machine` | 获取 AnimBP 中状态机的结构：状态、Conduit、State Alias 配置、转换拓扑与入口状态 |
 | `get_anim_state_graph` | 获取状态机单个状态内部的动画节点图；默认开启 `compact_output` 并使用 `summary` Pin payload |
-| `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等）；默认开启 `compact_output` |
+| `get_anim_transition_graph` | 获取状态转换的条件图 + 元数据（crossfade、blend_mode 等）；默认开启 `compact_output`，Compact 输出保留非空 AnimGraph `property_bindings`，包括 Transition Result 的 `bCanEnterTransition` 绑定 |
 
 ## Pose Search Tools (12)
 

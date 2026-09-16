@@ -1278,6 +1278,12 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimBlueprintInfo(
     Result->SetNumberField(TEXT("num_parent_asset_overrides"), AnimBP->ParentAssetOverrides.Num());
     Result->SetNumberField(TEXT("num_pose_watches"), AnimBP->PoseWatches.Num());
 
+    if (!AnimBP->ParentClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint parent class failed to load: %s"), *BlueprintPath));
+    }
+
     // --- Parent / root anim blueprint lineage (editor-only helpers) ---
 #if WITH_EDITOR
     if (TSharedPtr<FJsonObject> ParentJson = MakeAssetRefJson(UAnimBlueprint::GetParentAnimBlueprint(AnimBP)))
@@ -1385,6 +1391,12 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetAnimParentAssetOve
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
     }
+    if (!AnimBP->ParentClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint parent class failed to load: %s"), *BlueprintPath));
+    }
+
     if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
@@ -1429,6 +1441,12 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetAnimParentAssetOve
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
     }
+    if (!AnimBP->ParentClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint parent class failed to load: %s"), *BlueprintPath));
+    }
+
     if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
@@ -1547,6 +1565,12 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleRemoveAnimParentAsset
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("AnimBlueprint not found: %s"), *BlueprintPath));
     }
+    if (!AnimBP->ParentClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("AnimBlueprint parent class failed to load: %s"), *BlueprintPath));
+    }
+
     if (!UAnimBlueprint::GetParentAnimBlueprint(AnimBP))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
