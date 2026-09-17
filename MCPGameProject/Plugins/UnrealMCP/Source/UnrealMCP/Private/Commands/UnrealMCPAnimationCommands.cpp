@@ -10,6 +10,8 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/Skeleton.h"
+#include "Animation/BlendProfile.h"
+#include "ScopedTransaction.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/EditorParentPlayerListObj.h"
@@ -223,6 +225,18 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleCommand(const FString
     if (CommandType == TEXT("get_asset_references"))
     {
         return HandleGetAssetReferences(Params);
+    }
+    if (CommandType == TEXT("list_skeleton_blend_masks"))
+    {
+        return HandleListSkeletonBlendMasks(Params);
+    }
+    if (CommandType == TEXT("get_skeleton_blend_mask"))
+    {
+        return HandleGetSkeletonBlendMask(Params);
+    }
+    if (CommandType == TEXT("set_skeleton_blend_mask"))
+    {
+        return HandleSetSkeletonBlendMask(Params);
     }
     if (CommandType == TEXT("get_skeleton_bone_hierarchy"))
     {
@@ -8508,5 +8522,177 @@ TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleUpdateIKRigChain(cons
     Result->SetStringField(TEXT("asset_path"), Ctrl->GetAsset()->GetPathName());
     Result->SetStringField(TEXT("chain_name"), FinalName);
     Result->SetArrayField(TEXT("applied"), AppliedJson);
+    return Result;
+}
+
+
+namespace
+{
+    TSharedPtr<FJsonObject> BlendMaskToJson(USkeleton* Skeleton, UBlendProfile* Mask, bool bIncludeZeroWeights)
+    {
+        const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+        TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+        Result->SetStringField(TEXT("mask_name"), Mask->GetName());
+        Result->SetStringField(TEXT("mask_path"), Mask->GetPathName());
+        Result->SetStringField(TEXT("mode"), TEXT("BlendMask"));
+        Result->SetNumberField(TEXT("bone_count"), Ref.GetNum());
+        TArray<TSharedPtr<FJsonValue>> Weights;
+        for (int32 Index = 0; Index < Ref.GetNum(); ++Index)
+        {
+            const float Weight = Mask->GetBoneBlendScale(Index);
+            if (!bIncludeZeroWeights && Weight == 0.f) continue;
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("bone_name"), Ref.GetBoneName(Index).ToString());
+            Entry->SetNumberField(TEXT("bone_index"), Index);
+            Entry->SetNumberField(TEXT("weight"), Weight);
+            Weights.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+        Result->SetArrayField(TEXT("bone_weights"), Weights);
+        return Result;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleListSkeletonBlendMasks(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Path;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), Path) || Path.IsEmpty())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'skeleton_path'"));
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *Path);
+    if (!Skeleton) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Skeleton not found"));
+    TArray<TSharedPtr<FJsonValue>> Masks;
+    for (UBlendProfile* Profile : Skeleton->BlendProfiles)
+    {
+        if (!Profile || !Profile->IsBlendMask()) continue;
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("mask_name"), Profile->GetName());
+        Entry->SetStringField(TEXT("mask_path"), Profile->GetPathName());
+        Entry->SetNumberField(TEXT("entry_count"), Profile->GetNumBlendEntries());
+        Masks.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("skeleton_path"), Skeleton->GetPathName());
+    Result->SetArrayField(TEXT("masks"), Masks);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleGetSkeletonBlendMask(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Path, Name;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), Path) || Path.IsEmpty() ||
+        !Params->TryGetStringField(TEXT("mask_name"), Name) || Name.IsEmpty())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Required: skeleton_path, mask_name"));
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *Path);
+    if (!Skeleton) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Skeleton not found"));
+    UBlendProfile* Mask = Skeleton->GetBlendProfile(FName(*Name));
+    if (!Mask || !Mask->IsBlendMask())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blend mask not found (time/weight profiles are not masks)"));
+    bool bIncludeZero = true;
+    Params->TryGetBoolField(TEXT("include_zero_weights"), bIncludeZero);
+    return BlendMaskToJson(Skeleton, Mask, bIncludeZero);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAnimationCommands::HandleSetSkeletonBlendMask(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Path, Name;
+    if (!Params->TryGetStringField(TEXT("skeleton_path"), Path) || Path.IsEmpty() ||
+        !Params->TryGetStringField(TEXT("mask_name"), Name) || Name.IsEmpty())
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Required: skeleton_path, mask_name"));
+    FText NameError;
+    if (FName(*Name).IsNone() || !FName::IsValidXName(Name, INVALID_OBJECTNAME_CHARACTERS, &NameError))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid mask object name"));
+    USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, *Path);
+    if (!Skeleton) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Skeleton not found"));
+    UBlendProfile* Mask = Skeleton->GetBlendProfile(FName(*Name));
+    bool bCreate = false, bReplace = false;
+    Params->TryGetBoolField(TEXT("create_if_missing"), bCreate);
+    Params->TryGetBoolField(TEXT("replace"), bReplace);
+    if (!Mask && !bCreate) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Mask missing; set create_if_missing to create it"));
+    if (Mask && !Mask->IsBlendMask()) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Existing profile is not a BlendMask"));
+    if (!Mask && StaticFindObject(UObject::StaticClass(), Skeleton, *Name))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Another Skeleton subobject already uses this name"));
+
+    const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+    TArray<float> Desired;
+    Desired.SetNumZeroed(Ref.GetNum());
+    if (Mask && !bReplace)
+        for (int32 Index = 0; Index < Ref.GetNum(); ++Index) Desired[Index] = Mask->GetBoneBlendScale(Index);
+
+    const TArray<TSharedPtr<FJsonValue>>* Filters = nullptr;
+    if (Params->HasField(TEXT("branch_filters")))
+    {
+        if (!Params->TryGetArrayField(TEXT("branch_filters"), Filters))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("branch_filters must be an array"));
+        // Branch filters describe a complete layer mask, followed by optional bone overrides.
+        for (float& Weight : Desired) Weight = 0.f;
+        for (const TSharedPtr<FJsonValue>& Value : *Filters)
+        {
+            if (!Value.IsValid() || Value->Type != EJson::Object)
+                return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Each branch filter must be an object"));
+            const TSharedPtr<FJsonObject> Filter = Value->AsObject();
+            FString BoneName;
+            double DepthValue;
+            if (!Filter->TryGetStringField(TEXT("bone_name"), BoneName) ||
+                !Filter->TryGetNumberField(TEXT("blend_depth"), DepthValue) ||
+                !FMath::IsFinite(DepthValue) || DepthValue < MIN_int32 || DepthValue > MAX_int32 ||
+                DepthValue != FMath::FloorToDouble(DepthValue))
+                return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Each branch filter requires bone_name and an integer blend_depth"));
+            const int32 BoneIndex = Ref.FindBoneIndex(FName(*BoneName));
+            if (BoneIndex == INDEX_NONE) return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown bone: %s"), *BoneName));
+            const int32 BlendDepth = static_cast<int32>(DepthValue);
+            const float Increase = BlendDepth != 0 ? 1.f / static_cast<float>(BlendDepth) : 1.f;
+            for (int32 Index = BoneIndex; Index < Ref.GetNum(); ++Index)
+            {
+                const int32 Depth = Ref.GetDepthBetweenBones(Index, BoneIndex);
+                if (Depth != INDEX_NONE) Desired[Index] = FMath::Clamp(Desired[Index] + Increase * (Depth + 1), 0.f, 1.f);
+            }
+        }
+    }
+    const TArray<TSharedPtr<FJsonValue>>* Overrides = nullptr;
+    if (Params->HasField(TEXT("bone_weights")))
+    {
+        if (!Params->TryGetArrayField(TEXT("bone_weights"), Overrides))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("bone_weights must be an array"));
+        for (const TSharedPtr<FJsonValue>& Value : *Overrides)
+        {
+            if (!Value.IsValid() || Value->Type != EJson::Object)
+                return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Each bone weight must be an object"));
+            const TSharedPtr<FJsonObject> Entry = Value->AsObject();
+            FString BoneName;
+            double Weight;
+            bool bRecursive = false;
+            if (!Entry->TryGetStringField(TEXT("bone_name"), BoneName) ||
+                !Entry->TryGetNumberField(TEXT("weight"), Weight) || !FMath::IsFinite(Weight) || Weight < 0. || Weight > 1.)
+                return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Each override requires bone_name and a finite weight in [0,1]"));
+            if (Entry->HasField(TEXT("recursive")) && !Entry->TryGetBoolField(TEXT("recursive"), bRecursive))
+                return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("recursive must be a boolean"));
+            const int32 BoneIndex = Ref.FindBoneIndex(FName(*BoneName));
+            if (BoneIndex == INDEX_NONE) return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown bone: %s"), *BoneName));
+            Desired[BoneIndex] = static_cast<float>(Weight);
+            if (bRecursive)
+                for (int32 Index = BoneIndex + 1; Index < Ref.GetNum(); ++Index)
+                    if (Ref.BoneIsChildOf(Index, BoneIndex)) Desired[Index] = static_cast<float>(Weight);
+        }
+    }
+
+    const bool bCreated = Mask == nullptr;
+    FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "SetBlendMask", "Set Skeleton Blend Mask"));
+    Skeleton->Modify();
+    if (!Mask)
+    {
+        Mask = Skeleton->CreateNewBlendProfile(FName(*Name));
+        Mask->Mode = EBlendProfileMode::BlendMask;
+    }
+    Mask->Modify();
+    Mask->ProfileEntries.Reset();
+    for (int32 Index = 0; Index < Ref.GetNum(); ++Index)
+        Mask->SetBoneBlendScale(Index, Desired[Index], false, true);
+    Mask->PostEditChange();
+    Skeleton->PostEditChange();
+    Skeleton->MarkPackageDirty();
+    TSharedPtr<FJsonObject> Result = BlendMaskToJson(Skeleton, Mask, false);
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetBoolField(TEXT("created"), bCreated);
+    Result->SetBoolField(TEXT("saved"), false);
     return Result;
 }

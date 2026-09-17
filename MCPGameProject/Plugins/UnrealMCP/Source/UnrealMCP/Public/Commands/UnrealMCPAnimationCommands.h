@@ -15,6 +15,10 @@ public:
     TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
 private:
+    TSharedPtr<FJsonObject> HandleListSkeletonBlendMasks(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetSkeletonBlendMask(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetSkeletonBlendMask(const TSharedPtr<FJsonObject>& Params);
+
     TSharedPtr<FJsonObject> HandleGetAnimationInfo(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimationRuntimeSnapshot(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetAnimationSyncMarkers(const TSharedPtr<FJsonObject>& Params);

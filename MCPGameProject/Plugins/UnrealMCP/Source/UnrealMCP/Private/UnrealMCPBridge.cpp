@@ -442,6 +442,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_physics_asset_info") ||
                      CommandType == TEXT("get_asset_references") ||
                      CommandType == TEXT("get_skeleton_bone_hierarchy") ||
+                     CommandType == TEXT("list_skeleton_blend_masks") ||
+                     CommandType == TEXT("get_skeleton_blend_mask") ||
+                     CommandType == TEXT("set_skeleton_blend_mask") ||
                      CommandType == TEXT("list_chooser_tables") ||
                      CommandType == TEXT("get_chooser_table_info") ||
                      CommandType == TEXT("get_skeleton_retarget_modes") ||

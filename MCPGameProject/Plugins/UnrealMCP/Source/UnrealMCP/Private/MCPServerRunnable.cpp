@@ -57,6 +57,8 @@ namespace
             TEXT("list_animation_blueprints_for_skeleton"), TEXT("get_skeleton_reference_pose"),
             TEXT("get_skeletal_mesh_info"), TEXT("get_physics_asset_info"),
             TEXT("get_asset_references"), TEXT("get_skeleton_bone_hierarchy"),
+            TEXT("list_skeleton_blend_masks"),
+            TEXT("get_skeleton_blend_mask"),
             TEXT("list_chooser_tables"), TEXT("get_chooser_table_info"),
             TEXT("get_skeleton_retarget_modes"), TEXT("list_ik_rigs"), TEXT("get_ik_rig_info"),
             TEXT("list_ik_retargeters"), TEXT("get_ik_retargeter_info"),

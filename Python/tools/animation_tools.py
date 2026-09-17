@@ -11,8 +11,76 @@ from mcp.server.fastmcp import FastMCP, Context
 logger = logging.getLogger("UnrealMCP")
 
 
+
+def _blend_mask_command(command: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    from unreal_mcp_server import get_unreal_connection
+    try:
+        connection = get_unreal_connection()
+        if not connection:
+            return {"success": False, "message": "Failed to connect to Unreal Engine"}
+        response = connection.send_command(command, params)
+        if not response:
+            return {"success": False, "message": "No response from Unreal Engine"}
+        if response.get("status") == "error":
+            return {"success": False, "message": response.get("error", "Unknown error")}
+        return response.get("result", response)
+    except Exception as exc:
+        logger.exception("Blend mask command failed: %s", command)
+        return {"success": False, "message": str(exc)}
+
 def register_animation_tools(mcp: FastMCP):
     """Register animation tools with the MCP server."""
+
+
+    @mcp.tool()
+    def list_skeleton_blend_masks(ctx: Context, skeleton_path: str) -> Dict[str, Any]:
+        """List Skeleton Blend Masks with names, object paths and entry counts.
+
+        Read-only. Time/weight Blend Profiles are excluded. Can be used in batch_read.
+        """
+        return _blend_mask_command("list_skeleton_blend_masks", {"skeleton_path": skeleton_path})
+
+    @mcp.tool()
+    def get_skeleton_blend_mask(
+        ctx: Context, skeleton_path: str, mask_name: str, include_zero_weights: bool = True,
+    ) -> Dict[str, Any]:
+        """Read per-bone mask weights in one call (including implicit zeros by default).
+
+        Set include_zero_weights=False for compact nonzero output. Read-only; batch_read supported.
+        """
+        return _blend_mask_command("get_skeleton_blend_mask", {
+            "skeleton_path": skeleton_path, "mask_name": mask_name,
+            "include_zero_weights": include_zero_weights,
+        })
+
+    @mcp.tool()
+    def set_skeleton_blend_mask(
+        ctx: Context, skeleton_path: str, mask_name: str,
+        bone_weights: Optional[List[Dict[str, Any]]] = None,
+        branch_filters: Optional[List[Dict[str, Any]]] = None,
+        create_if_missing: bool = False, replace: bool = False,
+    ) -> Dict[str, Any]:
+        """Create/update a Skeleton Blend Mask in one validated, undoable batch.
+
+        bone_weights: ordered {bone_name, weight, recursive?: bool} overrides; weight in [0,1].
+        recursive sets descendants too. Later overrides win. Omitted bones retain current weights
+        unless replace=True, which starts at zero. create_if_missing=True permits creation.
+        branch_filters: ordered {bone_name, blend_depth: int}; generates a complete mask matching
+        Layered Blend Per Bone BranchFilter semantics (including negative depths), then applies
+        bone_weights overrides. Example: [{"bone_name":"Bip001_Spine1","blend_depth":4}].
+        Returns nonzero weights for immediate readback. Marks only the Skeleton dirty; does not
+        save, compile, bind an AnimGraph node, or perform source-control operations.
+        Use set_anim_graph_node_property to set BlendMode and BlendMasks on an existing node.
+        """
+        params: Dict[str, Any] = {
+            "skeleton_path": skeleton_path, "mask_name": mask_name,
+            "create_if_missing": create_if_missing, "replace": replace,
+        }
+        if bone_weights is not None:
+            params["bone_weights"] = bone_weights
+        if branch_filters is not None:
+            params["branch_filters"] = branch_filters
+        return _blend_mask_command("set_skeleton_blend_mask", params)
 
     @mcp.tool()
     def get_animation_runtime_snapshot(
